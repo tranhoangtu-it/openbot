@@ -4,7 +4,7 @@
 BINARY_NAME=openbot
 BUILD_DIR=./build
 MAIN_PATH=./cmd/openbot
-VERSION?=0.1.0
+VERSION?=0.2.0
 LDFLAGS=-ldflags "-s -w -X main.version=$(VERSION)"
 
 # Default target

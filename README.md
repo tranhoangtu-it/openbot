@@ -14,6 +14,7 @@
   <img src="https://img.shields.io/badge/License-MIT-green" alt="License"/>
   <img src="https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Docker-lightgrey" alt="Platform"/>
   <img src="https://img.shields.io/badge/Version-0.2.0-blue" alt="Version"/>
+  <img src="https://img.shields.io/badge/Tests-89%20passed-brightgreen" alt="Tests"/>
 </p>
 
 ---
@@ -28,21 +29,41 @@ OpenBot is a self-hosted AI assistant written entirely in Go. It connects to mul
 
 ## What's New in v0.2.0
 
-- **Token-by-token streaming** — OpenAI and Claude providers now stream responses in real-time
-- **Conversation sidebar** — Browse, search, and manage multiple conversations
+### Features
+- **Token-by-token streaming** — OpenAI and Claude providers stream responses in real-time via SSE
+- **Conversation sidebar** — Browse, search, and manage multiple conversations in the Web UI
 - **Dark mode** — System-aware dark/light theme across all pages
 - **Provider switching** — Select LLM provider per message
 - **Parallel tool execution** — Multiple tool calls run concurrently (up to 5)
-- **SQLite read/write split** — Separate reader pool for concurrent reads
-- **Prompt caching** — 60s TTL cache for system prompts
-- **Prometheus metrics** — Built-in `/metrics` endpoint
 - **WhatsApp channel** — Cloud API integration with webhook signature verification
 - **API Gateway** — OpenAI-compatible `/v1/chat/completions` endpoint
 - **Skills system** — Reusable workflows (built-in + user YAML definitions)
 - **Knowledge engine (RAG)** — Document upload, FTS5 chunked search, context injection
 - **Multi-agent router** — Keyword-based routing to specialized agent profiles
 - **Event system** — Internal pub/sub for cross-component communication
+- **Prometheus metrics** — Built-in `/metrics` endpoint
 - **Vendored assets** — Tailwind, marked.js, highlight.js, htmx bundled in binary (no CDN)
+
+### Performance & Hardening
+- **Singleton HTTP client** — All LLM providers share one connection pool via `sync.Once` (100 idle conns, HTTP/2)
+- **O(n) streaming** — `strings.Builder` replaces `O(n^2)` string concatenation during LLM streaming
+- **Pre-compiled patterns** — Skill registry caches compiled regexes and lowercase keywords at registration
+- **Pre-computed routing** — Agent router pre-lowers keywords once, not per-message
+- **Prompt cache cleanup** — Background goroutine evicts expired `sync.Map` entries every 2 minutes
+- **Retry with jitter** — Exponential backoff with randomized jitter prevents thundering herd
+- **SQLite read/write split** — Separate reader pool (4 connections) for concurrent reads
+- **Prompt caching** — 60s TTL cache for system prompts
+
+### Security & Stability
+- **HTTP server hardening** — `ReadHeaderTimeout`, `ReadTimeout`, `IdleTimeout`, `MaxHeaderBytes` on all servers
+- **Request body limits** — API Gateway enforces 1MB max body via `io.LimitReader`
+- **TOCTOU race fix** — Provider factory uses double-check locking for thread-safe singleton creation
+- **Proper mutex** — API Gateway uses `sync.Mutex` instead of channel-based mutex for better performance
+
+### Code Quality
+- **DRY providers** — Shared helper functions for OpenAI/Claude message and tool conversion (~100 lines deduplication)
+- **Standard library** — Custom `contains()` replaced with `strings.Contains`
+- **Error observability** — Previously-ignored database errors now logged with warnings
 
 ---
 
@@ -62,7 +83,7 @@ OpenBot is a self-hosted AI assistant written entirely in Go. It connects to mul
 
 | Provider | Mode | Streaming | Tool Calling | Notes |
 |----------|------|:---------:|:---:|-------|
-| **Ollama** | API | Yes | Yes | Local/cloud, exponential backoff retry |
+| **Ollama** | API | Yes | Yes | Local/cloud, exponential backoff retry with jitter |
 | **OpenAI** | API | **Yes** | Yes | GPT-4o, GPT-4.1, token-by-token streaming |
 | **Claude** | API | **Yes** | Yes | Claude Sonnet/Opus/Haiku, SSE streaming |
 | **ChatGPT Web** | Browser | No | No | Via headless Chrome |
@@ -91,6 +112,8 @@ OpenBot is a self-hosted AI assistant written entirely in Go. It connects to mul
 - **Audit logging**: Every tool execution is logged
 - **Workspace sandbox**: File tools enforce path boundaries
 - **Web UI auth**: Optional HTTP Basic Auth
+- **Request limits**: Body size limits on API Gateway (1MB)
+- **Server hardening**: Timeouts on all HTTP servers to prevent slowloris attacks
 
 ### Persistent Memory & Knowledge
 
@@ -104,7 +127,7 @@ OpenBot is a self-hosted AI assistant written entirely in Go. It connects to mul
 
 - **Built-in skills**: system_health, code_review, research
 - **User-defined skills**: YAML files in `~/.openbot/skills/`
-- Keyword and regex pattern matching
+- Keyword and regex pattern matching (pre-compiled at registration)
 - Multi-step workflows: tool → LLM → transform
 
 ### Observability
@@ -123,10 +146,7 @@ OpenBot is a self-hosted AI assistant written entirely in Go. It connects to mul
 git clone https://github.com/your-org/openbot.git
 cd openbot
 
-# Vendor frontend assets (optional — already included in repo)
-make vendor-assets
-
-# Build
+# Build (uses Go 1.25+)
 make build
 
 # Initialize config and workspace
@@ -152,13 +172,92 @@ make build
 
 Default path: `~/.openbot/config.json`
 
-### New v0.2.0 Config Sections
+Use `config.example.json` as a template with all available options.
 
-```json
+```bash
+# Initialize default config
+./build/openbot init
+
+# View current config
+./build/openbot config list
+
+# Change a setting
+./build/openbot config set channels.web.enabled true
+```
+
+### Full Config Structure
+
+```jsonc
 {
   "general": {
-    "maxConcurrentMessages": 5
+    "workspace": "~/.openbot/workspace",
+    "logLevel": "info",
+    "maxIterations": 20,
+    "defaultProvider": "ollama",
+    "maxConcurrentMessages": 5         // parallel message processing
   },
+  "providers": {
+    "ollama": {
+      "enabled": true,
+      "mode": "api",
+      "apiBase": "http://localhost:11434",
+      "defaultModel": "llama3.1:8b"
+    },
+    "openai": {
+      "enabled": false,
+      "mode": "api",
+      "apiKey": "",
+      "defaultModel": "gpt-4o"
+    },
+    "claude": {
+      "enabled": false,
+      "mode": "api",
+      "apiKey": "",
+      "defaultModel": "claude-sonnet-4-20250514"
+    }
+  },
+  "channels": {
+    "cli": { "enabled": true },
+    "telegram": {
+      "enabled": false,
+      "token": "",
+      "allowFrom": [],
+      "parseMode": "Markdown"
+    },
+    "web": {
+      "enabled": false,
+      "host": "127.0.0.1",
+      "port": 8080,
+      "auth": { "enabled": false, "username": "", "passwordHash": "" }
+    },
+    "whatsapp": {
+      "enabled": false,
+      "appId": "", "appSecret": "", "accessToken": "",
+      "verifyToken": "", "phoneNumberId": "",
+      "webhookPath": "/webhook/whatsapp"
+    }
+  },
+  "memory": {
+    "enabled": true,
+    "dbPath": "~/.openbot/memory.db",
+    "maxHistoryPerConversation": 100,
+    "retentionDays": 365
+  },
+  "security": {
+    "defaultPolicy": "ask",            // "allow" | "deny" | "ask"
+    "workspaceSandbox": false,
+    "blacklist": ["rm -rf /", "mkfs", "dd if="],
+    "whitelist": ["ls", "cat", "echo", "pwd", "date", "git status"],
+    "confirmPatterns": ["rm ", "sudo ", "kill ", "chmod "],
+    "confirmTimeoutSeconds": 60,
+    "auditLog": true
+  },
+  "tools": {
+    "shell": { "timeout": 30, "maxOutputBytes": 65536 },
+    "screen": { "enabled": false },
+    "web": { "searchProvider": "duckduckgo", "searchApiKey": "" }
+  },
+  "cron": { "enabled": true, "tasks": [] },
   "agents": {
     "enabled": false,
     "mode": "single",
@@ -181,17 +280,6 @@ Default path: `~/.openbot/config.json`
     "enabled": false,
     "port": 9090,
     "apiKey": ""
-  },
-  "channels": {
-    "whatsapp": {
-      "enabled": false,
-      "appId": "",
-      "appSecret": "",
-      "accessToken": "",
-      "verifyToken": "",
-      "phoneNumberId": "",
-      "webhookPath": "/webhook/whatsapp"
-    }
   }
 }
 ```
@@ -212,7 +300,7 @@ When `channels.web.enabled` is `true`, the Web UI is available at `http://127.0.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/status` | Health check |
+| GET | `/status` | Health check (`{"status":"ok","version":"0.2.0"}`) |
 | GET | `/api/config` | Get current config |
 | PUT | `/api/config` | Update config value |
 | POST | `/api/config/save` | Save config to disk |
@@ -239,66 +327,103 @@ When `channels.web.enabled` is `true`, the Web UI is available at `http://127.0.
 | `done` | Response complete |
 | `error` | Error occurred |
 
+### API Gateway (OpenAI-compatible)
+
+When `api.enabled` is `true`, an OpenAI-compatible API is exposed on port `9090`:
+
+```bash
+curl http://localhost:9090/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -d '{
+    "model": "ollama",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
 ---
 
 ## Project Structure
 
 ```
 openbot/
-├── cmd/openbot/main.go              # CLI entry point (Cobra)
+├── cmd/openbot/main.go              # CLI entry point (Cobra commands)
 ├── internal/
 │   ├── domain/                       # Interfaces & types
 │   │   ├── provider.go               #   Provider, StreamingProvider, StreamEvent
 │   │   ├── skill.go                  #   SkillDefinition, SkillRegistry, SkillExecutor
 │   │   ├── knowledge.go              #   KnowledgeStore, Document, DocumentChunk
 │   │   ├── memory.go                 #   MemoryStore (with provider/model/latency fields)
-│   │   └── message.go                #   InboundMessage (with Provider field), OutboundMessage (with StreamEvent)
+│   │   └── message.go                #   InboundMessage, OutboundMessage (with StreamEvent)
 │   ├── agent/                        # Agent engine
-│   │   ├── loop.go                   #   Core loop: streaming, parallel tools, provider switching
+│   │   ├── loop.go                   #   Core loop: streaming (strings.Builder), parallel tools
 │   │   ├── parser.go                 #   Tool call extraction from LLM content
-│   │   ├── prompt.go                 #   System prompt builder with caching (60s TTL)
-│   │   ├── router.go                 #   Multi-agent router (keyword strategy)
+│   │   ├── prompt.go                 #   System prompt builder with caching (60s TTL + cleanup)
+│   │   ├── router.go                 #   Multi-agent router (pre-computed keywords)
 │   │   ├── context_manager.go        #   Centralized context: memory + skills + knowledge
 │   │   ├── session.go                #   Conversation & session manager
 │   │   └── ratelimit.go              #   Token bucket rate limiter
 │   ├── provider/                     # LLM providers
-│   │   ├── openai.go                 #   OpenAI API + ChatStream (SSE)
-│   │   ├── claude.go                 #   Claude API + ChatStream (SSE)
+│   │   ├── openai.go                 #   OpenAI API + ChatStream (shared helpers)
+│   │   ├── claude.go                 #   Claude API + ChatStream (shared helpers)
 │   │   ├── ollama.go                 #   Ollama (streaming)
-│   │   ├── factory.go                #   Provider factory (registry + cache)
-│   │   ├── retry.go                  #   Exponential backoff retry
-│   │   └── httpclient.go             #   Shared HTTP client pool
+│   │   ├── factory.go                #   Provider factory (double-check locking cache)
+│   │   ├── retry.go                  #   Exponential backoff with jitter
+│   │   └── httpclient.go             #   Singleton HTTP client (sync.Once, HTTP/2)
 │   ├── channel/                      # User-facing channels
-│   │   ├── web.go                    #   Web UI (SSE streaming, conversations API, stats)
+│   │   ├── web.go                    #   Web UI (SSE streaming, conversations API, hardened server)
 │   │   ├── web_config.go             #   Web config API handlers
 │   │   ├── whatsapp.go               #   WhatsApp Cloud API channel
-│   │   ├── api_gateway.go            #   OpenAI-compatible API gateway
+│   │   ├── api_gateway.go            #   OpenAI-compatible API gateway (sync.Mutex, body limits)
 │   │   ├── telegram.go               #   Telegram bot
 │   │   ├── cli.go                    #   CLI REPL
 │   │   ├── web_templates/            #   HTML templates (dark mode, sidebar, streaming)
 │   │   └── web_assets/               #   Vendored JS/CSS (Tailwind, marked, hljs, htmx)
 │   ├── skill/                        # Skills system
-│   │   ├── registry.go               #   Skill registry with keyword/regex matching
+│   │   ├── registry.go               #   Skill registry (pre-compiled regex, cached keywords)
 │   │   ├── executor.go               #   Multi-step skill execution
 │   │   └── yaml_loader.go            #   Load user skills from YAML
 │   ├── knowledge/                    # Knowledge engine (RAG)
 │   │   └── engine.go                 #   Document chunking, FTS5 search, context building
 │   ├── metrics/                      # Observability
-│   │   └── collector.go              #   Prometheus-compatible metrics (counters, gauges, histograms)
+│   │   └── collector.go              #   Prometheus-compatible metrics
 │   ├── memory/
-│   │   └── store.go                  #   SQLite (read/write split, v2 schema, knowledge tables)
+│   │   └── store.go                  #   SQLite (read/write split, v2 schema)
 │   ├── security/engine.go            #   Security policy engine + audit
 │   ├── bus/
 │   │   ├── bus.go                    #   Message bus (Go channels)
 │   │   └── events.go                 #   Event system (pub/sub)
 │   ├── tool/                         #   9 agent tools
 │   ├── browser/bridge.go             #   Headless Chrome bridge
-│   └── config/                       #   Config (v2 schema: agents, knowledge, metrics, api, whatsapp)
-├── e2e/                              # Playwright E2E tests
-├── docs/                             # Documentation (Vietnamese)
-├── Makefile                          # Build targets including vendor-assets
-├── Dockerfile                        # Multi-stage Docker build
-└── docker-compose.yml
+│   └── config/                       #   Config (v2 schema)
+├── Makefile                          # Build, test, docker, cross-compile
+├── Dockerfile                        # Multi-stage Docker build (golang:1.25-alpine)
+├── docker-compose.yml                # Ready-to-run composition
+├── config.example.json               # Full config template
+└── go.mod
+```
+
+---
+
+## Makefile Targets
+
+```bash
+make build            # Build the binary → ./build/openbot
+make run ARGS='...'   # Run with arguments
+make dev              # Run interactive chat (shortcut)
+make test             # Run all tests with race detector
+make e2e              # Run Playwright E2E tests
+make clean            # Clean build artifacts
+make install          # Install to $GOPATH/bin
+make tidy             # Tidy Go modules
+make lint             # Run golangci-lint
+make build-linux      # Cross-compile for Linux amd64
+make build-darwin     # Cross-compile for macOS ARM64
+make docker-build     # Build Docker image
+make docker-run       # Run in Docker
+make docker-compose   # Docker Compose (detached)
+make vendor-assets    # Download vendored frontend assets
+make init             # Initialize config
 ```
 
 ---
@@ -318,6 +443,8 @@ make test    # go test ./... -v -race -count=1
 | `internal/security` | 16 | blacklist, whitelist, confirm, policy |
 | `internal/tool` | 13 | registry, parameters, args |
 
+All tests pass with the Go race detector enabled (`-race`), confirming zero data races across all concurrent subsystems.
+
 ---
 
 ## Docker
@@ -332,10 +459,35 @@ make docker-compose   # Docker Compose (detached)
 |----------|-------|
 | Build base | `golang:1.25-alpine` (multi-stage) |
 | Runtime base | `alpine:3.20` |
-| Binary | Statically linked (CGO_ENABLED=0) |
+| Binary | Statically linked (`CGO_ENABLED=0`) |
 | User | Non-root `openbot` |
 | Health check | `GET /status` every 30s |
-| Ports | `8080` (Web UI), `9090` (API Gateway, optional) |
+| Ports | `8080` (Web UI), `9090` (API Gateway) |
+
+---
+
+## Architecture Highlights
+
+### Concurrency Model
+- **Agent loop** processes messages concurrently (configurable `maxConcurrentMessages`)
+- **Parallel tool execution** within a single agent turn (reusable semaphore, up to 5 concurrent tools)
+- **Provider factory** uses double-check locking to safely cache singleton provider instances
+- All HTTP servers configured with proper timeouts to prevent resource exhaustion
+
+### Performance Optimizations
+- **Singleton HTTP client** (`sync.Once`) with shared transport: 100 idle connections, 20 per-host, HTTP/2
+- **O(n) streaming** via `strings.Builder` (replaces O(n^2) concatenation in hot path)
+- **Pre-compiled regex** and **pre-lowered keywords** in skill registry and agent router
+- **Prompt cache** with 60s TTL and periodic cleanup to prevent unbounded memory growth
+- **Retry with jitter** — exponential backoff + randomized jitter to avoid thundering herd
+
+### Security Layers
+1. **Blacklist/Whitelist/Confirm** — Policy engine on every tool execution
+2. **Workspace sandbox** — File tools restricted to configured workspace
+3. **HTTP hardening** — `ReadHeaderTimeout`, `ReadTimeout`, `IdleTimeout`, `MaxHeaderBytes`
+4. **Body size limits** — 1MB max on API Gateway requests
+5. **Audit logging** — Every tool execution recorded
+6. **Web auth** — Optional HTTP Basic Auth for Web UI
 
 ---
 
