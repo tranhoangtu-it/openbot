@@ -88,7 +88,7 @@ func (t *ScreenTool) keyPress(key string) (string, error) {
 	if key == "" {
 		return "Error: no key provided.", nil
 	}
-	return fmt.Sprintf("Key press %q — requires robotgo (CGO build). Stub only.", key), nil
+	return fmt.Sprintf("Key press %s — requires robotgo (CGO build). Stub only.", key), nil
 }
 
 func getInt(args map[string]any, key string) int {
