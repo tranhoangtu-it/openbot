@@ -396,6 +396,7 @@ openbot/
 │   ├── tool/                         #   9 agent tools
 │   ├── browser/bridge.go             #   Headless Chrome bridge
 │   └── config/                       #   Config (v2 schema)
+├── docs/                             # Documentation (Vietnamese)
 ├── Makefile                          # Build, test, docker, cross-compile
 ├── Dockerfile                        # Multi-stage Docker build (golang:1.25-alpine)
 ├── docker-compose.yml                # Ready-to-run composition
@@ -488,6 +489,23 @@ make docker-compose   # Docker Compose (detached)
 4. **Body size limits** — 1MB max on API Gateway requests
 5. **Audit logging** — Every tool execution recorded
 6. **Web auth** — Optional HTTP Basic Auth for Web UI
+
+---
+
+## Documentation
+
+Full documentation (Vietnamese) is available in the `docs/` directory:
+
+| File | Topic |
+|------|-------|
+| `01-tong-quan.md` | Overview |
+| `02-kien-truc.md` | Architecture |
+| `03-cau-hinh.md` | Configuration |
+| `04-api.md` | API Reference |
+| `05-cong-cu-agent.md` | Agent Tools |
+| `06-bao-mat.md` | Security |
+| `07-trien-khai.md` | Deployment |
+| `08-kiem-thu.md` | Testing |
 
 ---
 

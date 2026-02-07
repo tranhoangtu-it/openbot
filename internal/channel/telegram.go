@@ -77,6 +77,11 @@ func (t *Telegram) Start(ctx context.Context, bus domain.MessageBus) error {
 	)
 
 	bus.OnOutbound("telegram", func(msg domain.OutboundMessage) {
+		// Skip stream-only events — Telegram doesn't support incremental streaming,
+		// so only deliver the final message that carries Content.
+		if msg.StreamEvent != nil && msg.Content == "" {
+			return
+		}
 		chatID, err := strconv.ParseInt(msg.ChatID, 10, 64)
 		if err != nil {
 			t.logger.Error("invalid chat ID for telegram outbound", "chatID", msg.ChatID, "err", err)

@@ -41,10 +41,11 @@ const (
 
 // StreamEvent represents a single streaming event from an LLM provider.
 type StreamEvent struct {
-	Type    StreamEventType `json:"type"`
-	Content string          `json:"content,omitempty"` // token text or error message
-	Tool    string          `json:"tool,omitempty"`    // tool name for tool_start/tool_end
-	ToolID  string          `json:"tool_id,omitempty"` // tool call ID
+	Type      StreamEventType `json:"type"`
+	Content   string          `json:"content,omitempty"`     // token text or error message
+	Tool      string          `json:"tool,omitempty"`        // tool name for tool_start/tool_end
+	ToolID    string          `json:"tool_id,omitempty"`     // tool call ID
+	ToolCalls []ToolCall      `json:"tool_calls,omitempty"`  // complete tool calls (emitted with StreamDone)
 }
 
 type ChatRequest struct {

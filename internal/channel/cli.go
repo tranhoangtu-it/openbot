@@ -51,6 +51,11 @@ func (c *CLI) Start(ctx context.Context, bus domain.MessageBus) error {
 	c.bus = bus
 
 	bus.OnOutbound("cli", func(msg domain.OutboundMessage) {
+		// Skip stream-only events (tokens, tool_start, thinking, etc.)
+		// that carry no final content — only the done message with Content is displayed.
+		if msg.StreamEvent != nil && msg.Content == "" {
+			return
+		}
 		c.stopThinking()
 		_, _ = fmt.Fprintln(c.out, "\r\033[K") // Clear spinner line
 		_, _ = fmt.Fprintln(c.out, "--- OpenBot ---")

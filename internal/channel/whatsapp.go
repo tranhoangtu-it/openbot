@@ -46,8 +46,12 @@ func (w *WhatsApp) Name() string { return "whatsapp" }
 func (w *WhatsApp) Start(ctx context.Context, bus domain.MessageBus) error {
 	w.bus = bus
 
-	// Register outbound handler
+	// Register outbound handler — skip stream-only events (tokens, tool deltas)
+	// since WhatsApp doesn't support incremental streaming.
 	bus.OnOutbound("whatsapp", func(msg domain.OutboundMessage) {
+		if msg.StreamEvent != nil && msg.Content == "" {
+			return
+		}
 		if err := w.sendMessage(ctx, msg.ChatID, msg.Content); err != nil {
 			w.logger.Error("whatsapp send failed", "err", err, "chat", msg.ChatID)
 		}

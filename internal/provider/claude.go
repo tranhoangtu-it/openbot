@@ -262,11 +262,21 @@ type claudeStreamEvent struct {
 }
 
 type claudeTextDelta struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type        string `json:"type"`
+	Text        string `json:"text,omitempty"`
+	PartialJSON string `json:"partial_json,omitempty"` // for input_json_delta
+}
+
+// claudePendingToolCall accumulates streamed tool-use data for a single call.
+type claudePendingToolCall struct {
+	ID       string
+	Name     string
+	ArgsJSON strings.Builder
 }
 
 // ChatStream implements domain.StreamingProvider for Claude.
+// It accumulates streamed tool-use blocks (content_block_start + input_json_delta)
+// and emits complete ToolCalls in the final StreamDone event.
 func (c *Claude) ChatStream(ctx context.Context, req domain.ChatRequest, out chan<- domain.StreamEvent) error {
 	defer close(out)
 
@@ -324,6 +334,11 @@ func (c *Claude) ChatStream(ctx context.Context, req domain.ChatRequest, out cha
 		return fmt.Errorf("claude %d: %s", resp.StatusCode, string(respBody))
 	}
 
+	// Accumulators for streamed tool-use blocks.
+	// Claude sends: content_block_start (id, name) → content_block_delta (input_json_delta) → content_block_stop.
+	var pendingCalls []claudePendingToolCall
+	currentToolIdx := -1 // index into pendingCalls for the active tool block
+
 	// Parse SSE stream — Claude uses "event:" + "data:" lines
 	scanner := bufio.NewScanner(resp.Body)
 	var currentEvent string
@@ -346,11 +361,18 @@ func (c *Claude) ChatStream(ctx context.Context, req domain.ChatRequest, out cha
 			var evt claudeStreamEvent
 			if err := json.Unmarshal([]byte(data), &evt); err == nil && evt.ContentBlock != nil {
 				if evt.ContentBlock.Type == "tool_use" {
+					pendingCalls = append(pendingCalls, claudePendingToolCall{
+						ID:   evt.ContentBlock.ID,
+						Name: evt.ContentBlock.Name,
+					})
+					currentToolIdx = len(pendingCalls) - 1
 					out <- domain.StreamEvent{
 						Type:   domain.StreamToolStart,
 						Tool:   evt.ContentBlock.Name,
 						ToolID: evt.ContentBlock.ID,
 					}
+				} else {
+					currentToolIdx = -1
 				}
 			}
 
@@ -359,17 +381,31 @@ func (c *Claude) ChatStream(ctx context.Context, req domain.ChatRequest, out cha
 			if err := json.Unmarshal([]byte(data), &evt); err == nil && evt.Delta != nil {
 				var delta claudeTextDelta
 				if err := json.Unmarshal(evt.Delta, &delta); err == nil {
-					if delta.Type == "text_delta" && delta.Text != "" {
-						out <- domain.StreamEvent{
-							Type:    domain.StreamToken,
-							Content: delta.Text,
+					switch delta.Type {
+					case "text_delta":
+						if delta.Text != "" {
+							out <- domain.StreamEvent{
+								Type:    domain.StreamToken,
+								Content: delta.Text,
+							}
+						}
+					case "input_json_delta":
+						// Accumulate JSON fragments for the active tool call.
+						if currentToolIdx >= 0 && currentToolIdx < len(pendingCalls) {
+							pendingCalls[currentToolIdx].ArgsJSON.WriteString(delta.PartialJSON)
 						}
 					}
 				}
 			}
 
+		case "content_block_stop":
+			currentToolIdx = -1
+
 		case "message_stop":
-			out <- domain.StreamEvent{Type: domain.StreamDone}
+			out <- domain.StreamEvent{
+				Type:      domain.StreamDone,
+				ToolCalls: c.finalizePendingCalls(pendingCalls),
+			}
 			return nil
 		}
 	}
@@ -378,7 +414,43 @@ func (c *Claude) ChatStream(ctx context.Context, req domain.ChatRequest, out cha
 		return fmt.Errorf("claude stream scan: %w", err)
 	}
 
+	// Stream ended without message_stop — still finalize.
+	if len(pendingCalls) > 0 {
+		out <- domain.StreamEvent{
+			Type:      domain.StreamDone,
+			ToolCalls: c.finalizePendingCalls(pendingCalls),
+		}
+	}
+
 	return nil
+}
+
+// finalizePendingCalls converts accumulated tool-use fragments into domain.ToolCall values.
+func (c *Claude) finalizePendingCalls(pending []claudePendingToolCall) []domain.ToolCall {
+	if len(pending) == 0 {
+		return nil
+	}
+	var calls []domain.ToolCall
+	for _, pc := range pending {
+		if pc.Name == "" {
+			continue
+		}
+		var args map[string]any
+		if raw := pc.ArgsJSON.String(); raw != "" {
+			if err := json.Unmarshal([]byte(raw), &args); err != nil {
+				c.logger.Warn("claude stream: invalid tool args JSON", "tool", pc.Name, "error", err)
+			}
+		}
+		if args == nil {
+			args = make(map[string]any)
+		}
+		calls = append(calls, domain.ToolCall{
+			ID:        pc.ID,
+			Name:      pc.Name,
+			Arguments: args,
+		})
+	}
+	return calls
 }
 
 // Verify that Claude implements StreamingProvider.

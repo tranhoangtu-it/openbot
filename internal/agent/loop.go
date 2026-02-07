@@ -217,9 +217,9 @@ func (l *Loop) handleMessage(ctx context.Context, msg domain.InboundMessage) (st
 		var resp *domain.ChatResponse
 		if sp, ok := provider.(domain.StreamingProvider); ok {
 			streamCh := make(chan domain.StreamEvent, 64)
-			var streamErr error
+			streamErrCh := make(chan error, 1)
 			go func() {
-				streamErr = sp.ChatStream(ctx, domain.ChatRequest{
+				streamErrCh <- sp.ChatStream(ctx, domain.ChatRequest{
 					Messages:    messages,
 					Tools:       toolDefs,
 					MaxTokens:   defaultLLMMaxTokens,
@@ -228,18 +228,27 @@ func (l *Loop) handleMessage(ctx context.Context, msg domain.InboundMessage) (st
 			}()
 
 			var accumulated strings.Builder
+			var streamedToolCalls []domain.ToolCall
 			for evt := range streamCh {
 				if evt.Type == domain.StreamToken {
 					accumulated.WriteString(evt.Content)
 				}
+				// Collect complete tool calls from the final StreamDone event.
+				if len(evt.ToolCalls) > 0 {
+					streamedToolCalls = evt.ToolCalls
+				}
 				sendStreamEvent(evt)
 			}
-			if streamErr != nil {
-				return "", fmt.Errorf("LLM stream error: %w", streamErr)
+			// ChatStream closes streamCh (via defer) before returning, so
+			// range exits first. Block on streamErrCh to guarantee the
+			// goroutine's return value is visible before we inspect it.
+			if err := <-streamErrCh; err != nil {
+				return "", fmt.Errorf("LLM stream error: %w", err)
 			}
 			latency := time.Since(startTime).Milliseconds()
 			resp = &domain.ChatResponse{
 				Content:   accumulated.String(),
+				ToolCalls: streamedToolCalls,
 				LatencyMs: latency,
 			}
 		} else {

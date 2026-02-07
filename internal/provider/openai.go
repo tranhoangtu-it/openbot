@@ -114,6 +114,7 @@ type oaiFunction struct {
 }
 
 type oaiToolCall struct {
+	Index    int           `json:"index"` // used in streaming deltas to correlate fragments
 	ID       string        `json:"id"`
 	Type     string        `json:"type"`
 	Function oaiToolCallFn `json:"function"`
@@ -290,8 +291,17 @@ type oaiStreamChunk struct {
 	Usage   *oaiUsage         `json:"usage,omitempty"`
 }
 
+// oaiPendingToolCall accumulates streamed tool-call deltas for a single call.
+type oaiPendingToolCall struct {
+	ID       string
+	Name     string
+	ArgsJSON strings.Builder
+}
+
 // ChatStream implements domain.StreamingProvider for OpenAI.
-// It sends token-by-token events through the provided channel.
+// It sends token-by-token events through the provided channel and
+// accumulates streamed tool-call deltas so the final StreamDone event
+// carries complete ToolCalls that the agent loop can execute.
 func (o *OpenAI) ChatStream(ctx context.Context, req domain.ChatRequest, out chan<- domain.StreamEvent) error {
 	defer close(out)
 
@@ -321,6 +331,10 @@ func (o *OpenAI) ChatStream(ctx context.Context, req domain.ChatRequest, out cha
 		return fmt.Errorf("openai %d: %s", resp.StatusCode, string(respBody))
 	}
 
+	// Accumulator for tool-call fragments streamed across multiple SSE chunks.
+	// OpenAI sends tool_calls deltas with an "index" field to correlate fragments.
+	var pendingCalls []oaiPendingToolCall
+
 	// Parse SSE stream
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
@@ -332,7 +346,11 @@ func (o *OpenAI) ChatStream(ctx context.Context, req domain.ChatRequest, out cha
 		data := strings.TrimPrefix(line, "data: ")
 
 		if data == "[DONE]" {
-			out <- domain.StreamEvent{Type: domain.StreamDone}
+			// Emit final event with any accumulated tool calls.
+			out <- domain.StreamEvent{
+				Type:      domain.StreamDone,
+				ToolCalls: o.finalizePendingCalls(pendingCalls),
+			}
 			return nil
 		}
 
@@ -354,14 +372,28 @@ func (o *OpenAI) ChatStream(ctx context.Context, req domain.ChatRequest, out cha
 			}
 		}
 
-		// Stream tool call deltas
+		// Accumulate tool-call deltas (index-correlated).
 		for _, tc := range delta.ToolCalls {
+			// Grow accumulator slice to fit this index.
+			for len(pendingCalls) <= tc.Index {
+				pendingCalls = append(pendingCalls, oaiPendingToolCall{})
+			}
+			pc := &pendingCalls[tc.Index]
+
+			if tc.ID != "" {
+				pc.ID = tc.ID
+			}
 			if tc.Function.Name != "" {
+				pc.Name = tc.Function.Name
+				// Notify the frontend that a tool call is starting.
 				out <- domain.StreamEvent{
 					Type:   domain.StreamToolStart,
 					Tool:   tc.Function.Name,
 					ToolID: tc.ID,
 				}
+			}
+			if tc.Function.Arguments != "" {
+				pc.ArgsJSON.WriteString(tc.Function.Arguments)
 			}
 		}
 	}
@@ -370,7 +402,43 @@ func (o *OpenAI) ChatStream(ctx context.Context, req domain.ChatRequest, out cha
 		return fmt.Errorf("openai stream scan: %w", err)
 	}
 
+	// Stream ended without [DONE] — still finalize any pending calls.
+	if len(pendingCalls) > 0 {
+		out <- domain.StreamEvent{
+			Type:      domain.StreamDone,
+			ToolCalls: o.finalizePendingCalls(pendingCalls),
+		}
+	}
+
 	return nil
+}
+
+// finalizePendingCalls converts accumulated tool-call fragments into domain.ToolCall values.
+func (o *OpenAI) finalizePendingCalls(pending []oaiPendingToolCall) []domain.ToolCall {
+	if len(pending) == 0 {
+		return nil
+	}
+	var calls []domain.ToolCall
+	for _, pc := range pending {
+		if pc.Name == "" {
+			continue
+		}
+		var args map[string]any
+		if raw := pc.ArgsJSON.String(); raw != "" {
+			if err := json.Unmarshal([]byte(raw), &args); err != nil {
+				o.logger.Warn("openai stream: invalid tool args JSON", "tool", pc.Name, "error", err)
+			}
+		}
+		if args == nil {
+			args = make(map[string]any)
+		}
+		calls = append(calls, domain.ToolCall{
+			ID:        pc.ID,
+			Name:      pc.Name,
+			Arguments: args,
+		})
+	}
+	return calls
 }
 
 // Verify that OpenAI implements StreamingProvider.
