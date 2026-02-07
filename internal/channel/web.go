@@ -492,7 +492,7 @@ func (w *Web) handleCreateConversation(rw http.ResponseWriter, r *http.Request) 
 	sessionID := w.getOrCreateSession(r, rw)
 	// A new conversation is simply a new session cookie
 	http.SetCookie(rw, &http.Cookie{
-		Name: sessionCookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true,
+		Name: sessionCookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: true,
 	})
 	rw.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(rw).Encode(map[string]string{"status": "new_conversation", "old_session": sessionID})
