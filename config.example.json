@@ -1,0 +1,61 @@
+{
+  "general": {
+    "workspace": "~/.openbot/workspace",
+    "logLevel": "info",
+    "maxIterations": 20,
+    "defaultProvider": "ollama"
+  },
+  "providers": {
+    "ollama": {
+      "enabled": true,
+      "mode": "api",
+      "apiBase": "http://localhost:11434",
+      "defaultModel": "llama3.1:8b"
+    }
+  },
+  "channels": {
+    "telegram": {
+      "enabled": false,
+      "token": "",
+      "allowFrom": [],
+      "parseMode": "Markdown"
+    },
+    "web": {
+      "enabled": false,
+      "host": "127.0.0.1",
+      "port": 8080,
+      "auth": {
+        "enabled": false,
+        "username": "",
+        "passwordHash": ""
+      }
+    },
+    "cli": {
+      "enabled": true
+    }
+  },
+  "memory": {
+    "enabled": true,
+    "dbPath": "~/.openbot/memory.db",
+    "maxHistoryPerConversation": 100,
+    "retentionDays": 365
+  },
+  "security": {
+    "defaultPolicy": "ask",
+    "workspaceSandbox": false,
+    "blacklist": ["rm -rf /", "mkfs", "dd if="],
+    "whitelist": ["ls", "cat", "echo", "pwd", "date", "git status"],
+    "confirmPatterns": ["rm ", "sudo ", "kill ", "chmod ", "apt ", "brew "],
+    "confirmTimeoutSeconds": 60,
+    "auditLog": true
+  },
+  "tools": {
+    "shell": {
+      "timeout": 30,
+      "maxOutputBytes": 65536
+    },
+    "screen": { "enabled": false },
+    "web": { "searchProvider": "duckduckgo", "searchApiKey": "" }
+  },
+  "cron": { "enabled": true, "tasks": [] }
+}

@@ -1,0 +1,61 @@
+# Build output
+build/
+dist/
+openbot
+openbot
+*.exe
+
+# Config with secrets (use config.example.json as template)
+config.json
+
+# SQLite database files
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+
+# IDE
+.idea/
+.vscode/
+
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+
+# Chrome profiles (contain cookies/sessions)
+chrome-profiles/
+
+# Go
+vendor/
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Logs
+*.log
+logs/
+
+# Environment / secrets
+.env
+.env.*
+*.pem
+*.key
+
+# Temporary files
+tmp/
+temp/
+
+# E2E test artifacts
+e2e/node_modules/
+e2e/test-results/
+e2e/playwright-report/

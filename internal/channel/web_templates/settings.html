@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.Title}}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .toast { animation: slideUp 0.3s ease-out; }
+        @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+        .section-card { transition: all 0.2s; }
+        .section-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
+        .provider-chip { transition: all 0.15s; user-select: none; }
+        .provider-chip:hover { transform: translateY(-1px); box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+        .provider-chip.active { background: #eff6ff; border-color: #3b82f6; color: #1d4ed8; }
+        .provider-chip .star-btn { opacity: 0.3; transition: opacity 0.15s; }
+        .provider-chip .star-btn:hover { opacity: 0.8; }
+        .provider-chip .star-btn.is-default { opacity: 1; color: #f59e0b; }
+        .provider-config { animation: expandIn 0.2s ease-out; }
+        @keyframes expandIn { from { opacity: 0; max-height: 0; } to { opacity: 1; max-height: 500px; } }
+        input[type="text"], input[type="number"], input[type="password"], select, textarea {
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <nav class="bg-white shadow-sm border-b">
+        <div class="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
+            <div class="flex items-center space-x-2">
+                <img src="/assets/logo.png" alt="OpenBot" class="w-8 h-8 rounded-lg"/>
+                <a href="/" class="font-bold text-xl text-gray-800 hover:text-blue-600">OpenBot</a>
+            </div>
+            <div class="flex items-center space-x-4">
+                <a href="/" class="text-gray-600 hover:text-gray-900 font-medium">Dashboard</a>
+                <a href="/chat" class="text-gray-600 hover:text-gray-900 font-medium">Chat</a>
+                <a href="/settings" class="text-blue-600 font-medium">Settings</a>
+            </div>
+        </div>
+    </nav>
+
+    <main class="max-w-5xl mx-auto px-4 py-6">
+        <div class="flex items-center justify-between mb-6">
+            <h1 class="text-2xl font-bold text-gray-800">Settings</h1>
+            <div class="flex space-x-3">
+                <button onclick="loadConfig()" class="bg-gray-200 hover:bg-gray-300 text-gray-700 px-4 py-2 rounded-lg text-sm font-medium transition">Reload</button>
+                <button onclick="saveConfig()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition">Save to Disk</button>
+            </div>
+        </div>
+
+        <div id="toast" class="hidden fixed bottom-6 right-6 px-4 py-3 rounded-lg shadow-lg text-sm font-medium z-50"></div>
+
+        <!-- General -->
+        <div class="section-card bg-white rounded-xl shadow-sm border p-6 mb-4">
+            <h2 class="text-lg font-semibold text-gray-800 mb-4 flex items-center"><span class="mr-2">&#x2699;&#xFE0F;</span> General</h2>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-600 mb-1">Workspace</label>
+                    <input type="text" id="cfg-general-workspace" onchange="updateField('general.workspace', this.value)"
+                        class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"/>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-600 mb-1">Log Level</label>
+                    <select id="cfg-general-logLevel" onchange="updateField('general.logLevel', this.value)"
+                        class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                        <option value="debug">Debug</option>
+                        <option value="info">Info</option>
+                        <option value="warn">Warn</option>
+                        <option value="error">Error</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-600 mb-1">Max Iterations</label>
+                    <input type="number" id="cfg-general-maxIterations" min="1" max="100"
+                        onchange="updateField('general.maxIterations', this.value)"
+                        class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"/>
+                </div>
+            </div>
+        </div>
+
+        <!-- Providers — checkbox multi-select with inline config -->
+        <div class="section-card bg-white rounded-xl shadow-sm border p-6 mb-4">
+            <div class="flex items-center justify-between mb-4">
+                <h2 class="text-lg font-semibold text-gray-800 flex items-center"><span class="mr-2">&#x1F9E0;</span> Providers</h2>
+                <button onclick="addProvider()" class="text-sm bg-blue-50 hover:bg-blue-100 text-blue-600 px-3 py-1.5 rounded-lg font-medium transition">+ Add Provider</button>
+            </div>
+
+            <!-- Provider checkbox grid — select which to enable -->
+            <div id="provider-selector" class="flex flex-wrap gap-2 mb-4 pb-4 border-b">
+                <!-- Populated by JS -->
+            </div>
+            <p class="text-xs text-gray-400 -mt-3 mb-4">Check providers to enable. Click the star to set as default. Drag to reorder priority.</p>
+
+            <!-- Expanded config for each enabled provider -->
+            <div id="providers-container" class="space-y-4"></div>
+        </div>
+
+        <!-- Channels -->
+        <div class="section-card bg-white rounded-xl shadow-sm border p-6 mb-4">
+            <h2 class="text-lg font-semibold text-gray-800 mb-4 flex items-center"><span class="mr-2">&#x1F4E1;</span> Channels</h2>
+
+            <!-- Telegram -->
+            <div class="border rounded-lg p-4 mb-3">
+                <div class="flex items-center justify-between mb-3">
+                    <h3 class="font-medium text-gray-700">Telegram</h3>
+                    <label class="flex items-center space-x-2 cursor-pointer">
+                        <input type="checkbox" id="cfg-channels-telegram-enabled"
+                            onchange="updateField('channels.telegram.enabled', this.checked)"
+                            class="w-4 h-4 text-blue-600 rounded"/>
+                        <span class="text-sm text-gray-600">Enabled</span>
+                    </label>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-xs text-gray-500 mb-1">Bot Token</label>
+                        <input type="password" id="cfg-channels-telegram-token"
+                            onchange="updateField('channels.telegram.token', this.value)"
+                            placeholder="123456:ABC..."
+                            class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"/>
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-500 mb-1">Allowed User IDs (comma-separated)</label>
+                        <input type="text" id="cfg-channels-telegram-allowFrom"
+                            onchange="updateField('channels.telegram.allowFrom', this.value.split(',').map(s=>s.trim()).filter(Boolean))"
+                            placeholder="123456789"
+                            class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"/>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Web -->
+            <div class="border rounded-lg p-4 mb-3">
+                <div class="flex items-center justify-between mb-3">
+                    <h3 class="font-medium text-gray-700">Web UI</h3>
+                    <label class="flex items-center space-x-2 cursor-pointer">
+                        <input type="checkbox" id="cfg-channels-web-enabled"
+                            onchange="updateField('channels.web.enabled', this.checked)"
+                            class="w-4 h-4 text-blue-600 rounded"/>
+                        <span class="text-sm text-gray-600">Enabled</span>
+                    </label>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-xs text-gray-500 mb-1">Host</label>
+                        <input type="text" id="cfg-channels-web-host"
+                            onchange="updateField('channels.web.host', this.value)"
+                            class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"/>
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-500 mb-1">Port</label>
+                        <input type="number" id="cfg-channels-web-port"
+                            onchange="updateField('channels.web.port', this.value)"
+                            class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"/>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Security -->
+        <div class="section-card bg-white rounded-xl shadow-sm border p-6 mb-4">
+            <h2 class="text-lg font-semibold text-gray-800 mb-4 flex items-center"><span class="mr-2">&#x1F6E1;&#xFE0F;</span> Security</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-600 mb-1">Default Policy</label>
+                    <select id="cfg-security-defaultPolicy" onchange="updateField('security.defaultPolicy', this.value)"
+                        class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                        <option value="allow">Allow</option>
+                        <option value="deny">Deny</option>
+                        <option value="ask">Ask</option>
+                    </select>
+                </div>
+                <div class="flex items-center space-x-4 pt-6">
+                    <label class="flex items-center space-x-2 cursor-pointer">
+                        <input type="checkbox" id="cfg-security-workspaceSandbox"
+                            onchange="updateField('security.workspaceSandbox', this.checked)"
+                            class="w-4 h-4 text-blue-600 rounded"/>
+                        <span class="text-sm text-gray-600">Workspace Sandbox</span>
+                    </label>
+                    <label class="flex items-center space-x-2 cursor-pointer">
+                        <input type="checkbox" id="cfg-security-auditLog"
+                            onchange="updateField('security.auditLog', this.checked)"
+                            class="w-4 h-4 text-blue-600 rounded"/>
+                        <span class="text-sm text-gray-600">Audit Log</span>
+                    </label>
+                </div>
+            </div>
+            <div class="space-y-3">
+                <div>
+                    <label class="block text-sm font-medium text-gray-600 mb-1">Blacklist (one per line)</label>
+                    <textarea id="cfg-security-blacklist" rows="3"
+                        onchange="updateField('security.blacklist', this.value.split('\n').filter(Boolean))"
+                        class="w-full border rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-blue-500 focus:border-transparent"></textarea>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-600 mb-1">Whitelist (one per line)</label>
+                    <textarea id="cfg-security-whitelist" rows="3"
+                        onchange="updateField('security.whitelist', this.value.split('\n').filter(Boolean))"
+                        class="w-full border rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-blue-500 focus:border-transparent"></textarea>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-600 mb-1">Confirm Patterns (one per line)</label>
+                    <textarea id="cfg-security-confirmPatterns" rows="3"
+                        onchange="updateField('security.confirmPatterns', this.value.split('\n').filter(Boolean))"
+                        class="w-full border rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-blue-500 focus:border-transparent"></textarea>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tools -->
+        <div class="section-card bg-white rounded-xl shadow-sm border p-6 mb-4">
+            <h2 class="text-lg font-semibold text-gray-800 mb-4 flex items-center"><span class="mr-2">&#x1F6E0;&#xFE0F;</span> Tools</h2>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-600 mb-1">Shell Timeout (s)</label>
+                    <input type="number" id="cfg-tools-shell-timeout" min="1"
+                        onchange="updateField('tools.shell.timeout', this.value)"
+                        class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"/>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-600 mb-1">Max Output (bytes)</label>
+                    <input type="number" id="cfg-tools-shell-maxOutputBytes" min="1024"
+                        onchange="updateField('tools.shell.maxOutputBytes', this.value)"
+                        class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"/>
+                </div>
+                <div class="flex items-center pt-6">
+                    <label class="flex items-center space-x-2 cursor-pointer">
+                        <input type="checkbox" id="cfg-tools-screen-enabled"
+                            onchange="updateField('tools.screen.enabled', this.checked)"
+                            class="w-4 h-4 text-blue-600 rounded"/>
+                        <span class="text-sm text-gray-600">Screen Control</span>
+                    </label>
+                </div>
+            </div>
+        </div>
+
+        <!-- Memory -->
+        <div class="section-card bg-white rounded-xl shadow-sm border p-6 mb-4">
+            <h2 class="text-lg font-semibold text-gray-800 mb-4 flex items-center"><span class="mr-2">&#x1F4BE;</span> Memory</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div class="flex items-center">
+                    <label class="flex items-center space-x-2 cursor-pointer">
+                        <input type="checkbox" id="cfg-memory-enabled"
+                            onchange="updateField('memory.enabled', this.checked)"
+                            class="w-4 h-4 text-blue-600 rounded"/>
+                        <span class="text-sm text-gray-600">Enabled</span>
+                    </label>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-600 mb-1">DB Path</label>
+                    <input type="text" id="cfg-memory-dbPath"
+                        onchange="updateField('memory.dbPath', this.value)"
+                        class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"/>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-600 mb-1">Max History / Conversation</label>
+                    <input type="number" id="cfg-memory-maxHistoryPerConversation" min="1"
+                        onchange="updateField('memory.maxHistoryPerConversation', this.value)"
+                        class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"/>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-600 mb-1">Retention (days)</label>
+                    <input type="number" id="cfg-memory-retentionDays" min="1"
+                        onchange="updateField('memory.retentionDays', this.value)"
+                        class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"/>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+    let currentConfig = null;
+
+    function showToast(msg, type) {
+        const t = document.getElementById('toast');
+        t.className = 'toast fixed bottom-6 right-6 px-4 py-3 rounded-lg shadow-lg text-sm font-medium z-50 ' +
+            (type === 'error' ? 'bg-red-500 text-white' : 'bg-green-500 text-white');
+        t.textContent = msg;
+        t.classList.remove('hidden');
+        setTimeout(() => t.classList.add('hidden'), 3000);
+    }
+
+    async function loadConfig() {
+        try {
+            const resp = await fetch('/api/config');
+            if (!resp.ok) throw new Error('Failed to load config');
+            currentConfig = await resp.json();
+            populateForm(currentConfig);
+            showToast('Config loaded', 'ok');
+        } catch(e) {
+            showToast('Error: ' + e.message, 'error');
+        }
+    }
+
+    function populateForm(cfg) {
+        // General
+        setVal('cfg-general-workspace', cfg.general?.workspace);
+        setVal('cfg-general-logLevel', cfg.general?.logLevel);
+        setVal('cfg-general-maxIterations', cfg.general?.maxIterations);
+
+        // Channels - Telegram
+        setChecked('cfg-channels-telegram-enabled', cfg.channels?.telegram?.enabled);
+        setVal('cfg-channels-telegram-token', cfg.channels?.telegram?.token);
+        setVal('cfg-channels-telegram-allowFrom', (cfg.channels?.telegram?.allowFrom || []).join(', '));
+
+        // Channels - Web
+        setChecked('cfg-channels-web-enabled', cfg.channels?.web?.enabled);
+        setVal('cfg-channels-web-host', cfg.channels?.web?.host);
+        setVal('cfg-channels-web-port', cfg.channels?.web?.port);
+
+        // Security
+        setVal('cfg-security-defaultPolicy', cfg.security?.defaultPolicy);
+        setChecked('cfg-security-workspaceSandbox', cfg.security?.workspaceSandbox);
+        setChecked('cfg-security-auditLog', cfg.security?.auditLog);
+        setVal('cfg-security-blacklist', (cfg.security?.blacklist || []).join('\n'));
+        setVal('cfg-security-whitelist', (cfg.security?.whitelist || []).join('\n'));
+        setVal('cfg-security-confirmPatterns', (cfg.security?.confirmPatterns || []).join('\n'));
+
+        // Tools
+        setVal('cfg-tools-shell-timeout', cfg.tools?.shell?.timeout);
+        setVal('cfg-tools-shell-maxOutputBytes', cfg.tools?.shell?.maxOutputBytes);
+        setChecked('cfg-tools-screen-enabled', cfg.tools?.screen?.enabled);
+
+        // Memory
+        setChecked('cfg-memory-enabled', cfg.memory?.enabled);
+        setVal('cfg-memory-dbPath', cfg.memory?.dbPath);
+        setVal('cfg-memory-maxHistoryPerConversation', cfg.memory?.maxHistoryPerConversation);
+        setVal('cfg-memory-retentionDays', cfg.memory?.retentionDays);
+
+        // Providers (checkbox multi-select)
+        renderProviderSelector(cfg.providers || {}, cfg.general?.defaultProvider);
+        renderProviderConfigs(cfg.providers || {});
+    }
+
+    // Provider icon mapping
+    const providerIcons = {
+        ollama: '&#x1F999;', openai: '&#x1F4A0;', claude: '&#x1F4DC;',
+        chatgpt: '&#x1F916;', gemini: '&#x2728;',
+    };
+    function provIcon(name) { return providerIcons[name] || '&#x1F50C;'; }
+
+    // Render the checkbox chip selector at the top of Providers section
+    function renderProviderSelector(providers, defaultProvider) {
+        const selector = document.getElementById('provider-selector');
+        selector.innerHTML = '';
+
+        for (const [name, prov] of Object.entries(providers)) {
+            const isEnabled = !!prov.enabled;
+            const isDefault = (name === defaultProvider);
+
+            const chip = document.createElement('div');
+            chip.className = `provider-chip flex items-center gap-2 border rounded-xl px-3 py-2 cursor-pointer ${isEnabled ? 'active' : 'bg-white text-gray-500 border-gray-200'}`;
+            chip.setAttribute('data-provider', name);
+
+            chip.innerHTML = `
+                <input type="checkbox" id="prov-check-${name}" ${isEnabled ? 'checked' : ''}
+                    class="w-4 h-4 text-blue-600 rounded cursor-pointer shrink-0"
+                    onchange="toggleProvider('${name}', this.checked)" />
+                <span class="text-base">${provIcon(name)}</span>
+                <span class="text-sm font-medium capitalize">${name}</span>
+                <button type="button" class="star-btn ml-1 text-base leading-none ${isDefault ? 'is-default' : ''}"
+                    title="${isDefault ? 'Default provider' : 'Set as default'}"
+                    onclick="event.stopPropagation(); setDefaultProvider('${name}')">
+                    ${isDefault ? '&#x2605;' : '&#x2606;'}
+                </button>`;
+
+            // Click on the chip toggles the checkbox
+            chip.addEventListener('click', (e) => {
+                if (e.target.tagName === 'INPUT' || e.target.tagName === 'BUTTON') return;
+                const cb = chip.querySelector('input[type="checkbox"]');
+                cb.checked = !cb.checked;
+                toggleProvider(name, cb.checked);
+            });
+
+            selector.appendChild(chip);
+        }
+    }
+
+    // Toggle a provider enabled/disabled
+    async function toggleProvider(name, enabled) {
+        await updateField('providers.' + name + '.enabled', enabled);
+        // Refresh selector UI
+        if (currentConfig) {
+            if (!currentConfig.providers) currentConfig.providers = {};
+            if (!currentConfig.providers[name]) currentConfig.providers[name] = {};
+            currentConfig.providers[name].enabled = enabled;
+            renderProviderSelector(currentConfig.providers, currentConfig.general?.defaultProvider);
+            renderProviderConfigs(currentConfig.providers);
+        }
+    }
+
+    // Set a provider as the default (star)
+    async function setDefaultProvider(name) {
+        await updateField('general.defaultProvider', name);
+        // Also ensure it's enabled
+        if (currentConfig?.providers?.[name] && !currentConfig.providers[name].enabled) {
+            await updateField('providers.' + name + '.enabled', true);
+            currentConfig.providers[name].enabled = true;
+        }
+        if (currentConfig) {
+            currentConfig.general.defaultProvider = name;
+            renderProviderSelector(currentConfig.providers, name);
+        }
+    }
+
+    // Render expanded config panels for ENABLED providers only
+    function renderProviderConfigs(providers) {
+        const container = document.getElementById('providers-container');
+        container.innerHTML = '';
+        for (const [name, prov] of Object.entries(providers)) {
+            if (!prov.enabled) continue;
+            const div = document.createElement('div');
+            div.className = 'provider-config border rounded-lg p-4 bg-gray-50';
+            div.innerHTML = `
+                <h3 class="font-medium text-gray-700 capitalize mb-3 flex items-center gap-2">
+                    <span>${provIcon(name)}</span> ${name}
+                    <span class="text-xs px-2 py-0.5 rounded-full ${name === currentConfig?.general?.defaultProvider ? 'bg-amber-100 text-amber-700' : 'bg-gray-200 text-gray-500'}">
+                        ${name === currentConfig?.general?.defaultProvider ? 'Default' : 'Active'}
+                    </span>
+                </h3>
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+                    <div>
+                        <label class="block text-xs text-gray-500 mb-1">Mode</label>
+                        <select onchange="updateField('providers.${name}.mode', this.value)"
+                            class="w-full border rounded-lg px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+                            <option value="api" ${prov.mode==='api'?'selected':''}>API</option>
+                            <option value="browser" ${prov.mode==='browser'?'selected':''}>Browser</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-500 mb-1">API Base</label>
+                        <input type="text" value="${prov.apiBase||''}"
+                            onchange="updateField('providers.${name}.apiBase', this.value)"
+                            class="w-full border rounded-lg px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"/>
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-500 mb-1">API Key</label>
+                        <input type="password" value="${prov.apiKey||''}"
+                            onchange="updateField('providers.${name}.apiKey', this.value)"
+                            placeholder="sk-..."
+                            class="w-full border rounded-lg px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"/>
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-500 mb-1">Default Model</label>
+                        <input type="text" value="${prov.defaultModel||''}"
+                            onchange="updateField('providers.${name}.defaultModel', this.value)"
+                            class="w-full border rounded-lg px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"/>
+                    </div>
+                </div>`;
+            container.appendChild(div);
+        }
+        if (container.children.length === 0) {
+            container.innerHTML = '<p class="text-sm text-gray-400 italic">No providers enabled. Check a provider above to configure it.</p>';
+        }
+    }
+
+    function setVal(id, val) {
+        const el = document.getElementById(id);
+        if (el && val !== undefined && val !== null) el.value = val;
+    }
+    function setChecked(id, val) {
+        const el = document.getElementById(id);
+        if (el) el.checked = !!val;
+    }
+
+    async function updateField(path, value) {
+        try {
+            const resp = await fetch('/api/config', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path, value }),
+            });
+            if (!resp.ok) {
+                const data = await resp.json();
+                showToast('Error: ' + (data.error || 'update failed'), 'error');
+                return;
+            }
+            showToast('Updated: ' + path, 'ok');
+        } catch(e) {
+            showToast('Error: ' + e.message, 'error');
+        }
+    }
+
+    async function saveConfig() {
+        try {
+            const resp = await fetch('/api/config/save', { method: 'POST' });
+            const data = await resp.json();
+            if (!resp.ok) {
+                showToast('Save failed: ' + (data.error || ''), 'error');
+                return;
+            }
+            showToast('Config saved to ' + (data.path || 'disk'), 'ok');
+        } catch(e) {
+            showToast('Error: ' + e.message, 'error');
+        }
+    }
+
+    function addProvider() {
+        const name = prompt('Provider name (e.g. openai, claude, gemini):');
+        if (!name || !name.trim()) return;
+        const cleanName = name.trim().toLowerCase();
+        // Create the provider entry as enabled
+        updateField('providers.' + cleanName + '.enabled', true).then(() => loadConfig());
+    }
+
+    // Load config on page load
+    loadConfig();
+    </script>
+</body>
+</html>
