@@ -3,11 +3,12 @@ services:
     build:
       context: .
       args:
-        VERSION: "0.1.0"
+        VERSION: "0.2.0"
     container_name: openbot
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "8080:8080"   # Web UI
+      - "9090:9090"   # API Gateway (optional)
     volumes:
       - ./config.json:/home/openbot/.openbot/config.json:ro
       - openbot-data:/home/openbot/.openbot

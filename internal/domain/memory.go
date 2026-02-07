@@ -41,6 +41,9 @@ type MessageRecord struct {
 	ToolName       string    `json:"tool_name,omitempty"`
 	TokensIn       int       `json:"tokens_in"`
 	TokensOut      int       `json:"tokens_out"`
+	Provider       string    `json:"provider,omitempty"`
+	Model          string    `json:"model,omitempty"`
+	LatencyMs      int64     `json:"latency_ms,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
 }
 

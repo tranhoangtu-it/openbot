@@ -1,4 +1,4 @@
-.PHONY: build run test clean install dev lint tidy
+.PHONY: build run test clean install dev lint tidy vendor-assets
 
 # Variables
 BINARY_NAME=openbot
@@ -72,6 +72,17 @@ docker-run:
 
 docker-compose:
 	docker compose up -d
+
+# Vendor frontend assets (Tailwind, marked, highlight.js, htmx)
+ASSETS_DIR=internal/channel/web_assets
+vendor-assets:
+	@echo "Downloading vendored assets..."
+	@curl -sL "https://cdn.tailwindcss.com/3.4.17" -o $(ASSETS_DIR)/tailwind.js
+	@curl -sL "https://cdn.jsdelivr.net/npm/marked@15.0.6/marked.min.js" -o $(ASSETS_DIR)/marked.min.js
+	@curl -sL "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js" -o $(ASSETS_DIR)/highlight.min.js
+	@curl -sL "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github-dark.min.css" -o $(ASSETS_DIR)/github-dark.min.css
+	@curl -sL "https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js" -o $(ASSETS_DIR)/htmx.min.js
+	@echo "Assets vendored into $(ASSETS_DIR)/"
 
 # Show help
 help:

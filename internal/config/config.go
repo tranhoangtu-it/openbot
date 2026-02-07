@@ -18,13 +18,18 @@ type Config struct {
 	Security  SecurityConfig             `json:"security"`
 	Tools     ToolsConfig                `json:"tools"`
 	Cron      CronConfig                 `json:"cron"`
+	Agents    AgentsConfig               `json:"agents"`
+	Knowledge KnowledgeConfig            `json:"knowledge"`
+	Metrics   MetricsConfig              `json:"metrics"`
+	API       APIConfig                  `json:"api"`
 }
 
 type GeneralConfig struct {
-	Workspace       string `json:"workspace"`
-	LogLevel        string `json:"logLevel"`
-	MaxIterations   int    `json:"maxIterations"`
-	DefaultProvider string `json:"defaultProvider"`
+	Workspace             string `json:"workspace"`
+	LogLevel              string `json:"logLevel"`
+	MaxIterations         int    `json:"maxIterations"`
+	DefaultProvider       string `json:"defaultProvider"`
+	MaxConcurrentMessages int    `json:"maxConcurrentMessages"`
 }
 
 type ProviderConfig struct {
@@ -42,6 +47,17 @@ type ChannelsConfig struct {
 	Telegram TelegramConfig `json:"telegram"`
 	Web      WebConfig      `json:"web"`
 	CLI      CLIConfig      `json:"cli"`
+	WhatsApp WhatsAppConfig `json:"whatsapp"`
+}
+
+type WhatsAppConfig struct {
+	Enabled       bool   `json:"enabled"`
+	AppID         string `json:"appId,omitempty"`
+	AppSecret     string `json:"appSecret,omitempty"`
+	AccessToken   string `json:"accessToken,omitempty"`
+	VerifyToken   string `json:"verifyToken,omitempty"`
+	PhoneNumberID string `json:"phoneNumberId,omitempty"`
+	WebhookPath   string `json:"webhookPath,omitempty"`
 }
 
 type TelegramConfig struct {
@@ -153,6 +169,46 @@ type CronTask struct {
 	Channel   string `json:"channel"`
 	ChatID    string `json:"chatId"`
 	Enabled   bool   `json:"enabled"`
+}
+
+// AgentsConfig configures the multi-agent routing system.
+type AgentsConfig struct {
+	Enabled        bool              `json:"enabled"`
+	Mode           string            `json:"mode"`           // "single" | "multi"
+	RouterStrategy string            `json:"routerStrategy"` // "keyword" | "llm" | "hybrid"
+	Agents         map[string]AgentProfile `json:"agents,omitempty"`
+}
+
+// AgentProfile configures a specialized agent in multi-agent mode.
+type AgentProfile struct {
+	SystemPrompt string   `json:"systemPrompt,omitempty"`
+	Provider     string   `json:"provider,omitempty"`
+	Tools        []string `json:"tools,omitempty"`
+	Keywords     []string `json:"keywords,omitempty"`
+}
+
+// KnowledgeConfig configures the RAG knowledge engine.
+type KnowledgeConfig struct {
+	Enabled      bool   `json:"enabled"`
+	MaxDocuments int    `json:"maxDocuments"`
+	ChunkSize    int    `json:"chunkSize"`    // tokens per chunk
+	ChunkOverlap int    `json:"chunkOverlap"` // overlapping tokens
+	SearchTopK   int    `json:"searchTopK"`
+	StoragePath  string `json:"storagePath,omitempty"`
+}
+
+// MetricsConfig configures the observability / Prometheus metrics.
+type MetricsConfig struct {
+	Enabled       bool   `json:"enabled"`
+	Endpoint      string `json:"endpoint"`
+	RetentionDays int    `json:"retentionDays"`
+}
+
+// APIConfig configures the OpenAI-compatible API gateway.
+type APIConfig struct {
+	Enabled bool   `json:"enabled"`
+	Port    int    `json:"port"`
+	APIKey  string `json:"apiKey,omitempty"`
 }
 
 // DefaultConfigDir returns the default config directory (~/.openbot).

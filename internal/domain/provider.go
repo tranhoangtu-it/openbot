@@ -19,6 +19,34 @@ type Provider interface {
 	Healthy(ctx context.Context) error
 }
 
+// StreamingProvider is an optional extension for providers that support
+// token-by-token streaming. Providers that implement this can deliver
+// incremental responses through StreamEvent channels.
+type StreamingProvider interface {
+	Provider
+	ChatStream(ctx context.Context, req ChatRequest, out chan<- StreamEvent) error
+}
+
+// StreamEventType classifies a streaming event.
+type StreamEventType string
+
+const (
+	StreamToken     StreamEventType = "token"
+	StreamThinking  StreamEventType = "thinking"
+	StreamToolStart StreamEventType = "tool_start"
+	StreamToolEnd   StreamEventType = "tool_end"
+	StreamDone      StreamEventType = "done"
+	StreamError     StreamEventType = "error"
+)
+
+// StreamEvent represents a single streaming event from an LLM provider.
+type StreamEvent struct {
+	Type    StreamEventType `json:"type"`
+	Content string          `json:"content,omitempty"` // token text or error message
+	Tool    string          `json:"tool,omitempty"`    // tool name for tool_start/tool_end
+	ToolID  string          `json:"tool_id,omitempty"` // tool call ID
+}
+
 type ChatRequest struct {
 	Messages    []Message
 	Tools       []ToolDefinition
@@ -26,7 +54,8 @@ type ChatRequest struct {
 	MaxTokens   int
 	Temperature float64
 	Stream      bool
-	StreamCh    chan<- string
+	StreamCh    chan<- string // deprecated: use StreamingProvider.ChatStream instead
+	Provider    string        // optional: override default provider for this request
 }
 
 type ChatResponse struct {
@@ -34,6 +63,7 @@ type ChatResponse struct {
 	ToolCalls    []ToolCall
 	FinishReason string // stop | tool_calls | length
 	Usage        Usage
+	LatencyMs    int64 // time taken for this LLM call in milliseconds
 }
 
 func (r *ChatResponse) HasToolCalls() bool {

@@ -43,7 +43,7 @@ func NewOllama(cfg OllamaConfig) *Ollama {
 	return &Ollama{
 		apiBase:      cfg.APIBase,
 		defaultModel: cfg.DefaultModel,
-		client:       &http.Client{Timeout: defaultHTTPTimeout},
+		client:       SharedHTTPClient(defaultHTTPTimeout),
 		logger:       cfg.Logger,
 	}
 }

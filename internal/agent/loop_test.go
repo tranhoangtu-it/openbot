@@ -2,6 +2,8 @@ package agent
 
 import (
 	"testing"
+
+	"openbot/internal/domain"
 )
 
 // --- extractToolCallsFromContent ---
@@ -147,5 +149,76 @@ func TestExtractToolCalls_WithInvalidEscapes(t *testing.T) {
 	}
 	if calls[0].Name != "shell" {
 		t.Fatalf("expected 'shell', got %q", calls[0].Name)
+	}
+}
+
+// --- extractSecurityCommand ---
+
+func TestExtractSecurityCommand_Shell(t *testing.T) {
+	tc := domain.ToolCall{Name: "shell", Arguments: map[string]any{"command": "rm -rf /"}}
+	result := extractSecurityCommand(tc)
+	if result != "rm -rf /" {
+		t.Fatalf("expected 'rm -rf /', got %q", result)
+	}
+}
+
+func TestExtractSecurityCommand_WriteFile(t *testing.T) {
+	tc := domain.ToolCall{Name: "write_file", Arguments: map[string]any{"path": "/etc/passwd", "content": "hacked"}}
+	result := extractSecurityCommand(tc)
+	if result != "write /etc/passwd" {
+		t.Fatalf("expected 'write /etc/passwd', got %q", result)
+	}
+}
+
+func TestExtractSecurityCommand_WebFetch(t *testing.T) {
+	tc := domain.ToolCall{Name: "web_fetch", Arguments: map[string]any{"url": "http://evil.com"}}
+	result := extractSecurityCommand(tc)
+	if result != "fetch http://evil.com" {
+		t.Fatalf("expected 'fetch http://evil.com', got %q", result)
+	}
+}
+
+func TestExtractSecurityCommand_ReadFile(t *testing.T) {
+	tc := domain.ToolCall{Name: "read_file", Arguments: map[string]any{"path": "/etc/passwd"}}
+	result := extractSecurityCommand(tc)
+	if result != "" {
+		t.Fatalf("read_file should not produce security command, got %q", result)
+	}
+}
+
+func TestExtractSecurityCommand_NoArgs(t *testing.T) {
+	tc := domain.ToolCall{Name: "shell", Arguments: map[string]any{}}
+	result := extractSecurityCommand(tc)
+	if result != "" {
+		t.Fatalf("expected empty for shell without command arg, got %q", result)
+	}
+}
+
+// --- coalesce ---
+
+func TestCoalesce_FirstNonNil(t *testing.T) {
+	a := map[string]any{"key": "a"}
+	b := map[string]any{"key": "b"}
+	result := coalesce(a, b)
+	if result["key"] != "a" {
+		t.Fatalf("expected 'a', got %v", result["key"])
+	}
+}
+
+func TestCoalesce_SecondWhenFirstNil(t *testing.T) {
+	b := map[string]any{"key": "b"}
+	result := coalesce(nil, b)
+	if result["key"] != "b" {
+		t.Fatalf("expected 'b', got %v", result["key"])
+	}
+}
+
+func TestCoalesce_BothNil(t *testing.T) {
+	result := coalesce(nil, nil)
+	if result == nil {
+		t.Fatal("expected empty map, got nil")
+	}
+	if len(result) != 0 {
+		t.Fatalf("expected empty map, got %v", result)
 	}
 }

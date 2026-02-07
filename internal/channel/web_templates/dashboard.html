@@ -1,52 +1,152 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="h-full">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{.Title}}</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <script src="/assets/tailwind.js"></script>
+    <script>tailwind.config={darkMode:'class'}</script>
+    <script src="/assets/htmx.min.js"></script>
 </head>
-<body class="bg-gray-100 min-h-screen">
-    <nav class="bg-white shadow-sm border-b">
+<body class="bg-gray-100 dark:bg-gray-900 min-h-screen">
+    <nav class="bg-white dark:bg-gray-800 shadow-sm border-b dark:border-gray-700">
         <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
             <div class="flex items-center space-x-2">
                 <img src="/assets/logo.png" alt="OpenBot" class="w-8 h-8 rounded-lg"/>
-                <span class="font-bold text-xl text-gray-800">OpenBot</span>
-                <span class="text-xs bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full">v0.1.0</span>
+                <span class="font-bold text-xl text-gray-800 dark:text-white">OpenBot</span>
+                <span class="text-xs bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 px-2 py-0.5 rounded-full">v0.2.0</span>
             </div>
-            <div class="flex space-x-4">
-                <a href="/" class="text-blue-600 font-medium">Dashboard</a>
-                <a href="/chat" class="text-gray-600 hover:text-gray-900 font-medium">Chat</a>
-                <a href="/settings" class="text-gray-600 hover:text-gray-900 font-medium">Settings</a>
+            <div class="flex items-center space-x-4">
+                <a href="/" class="text-blue-600 dark:text-blue-400 font-medium">Dashboard</a>
+                <a href="/chat" class="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white font-medium">Chat</a>
+                <a href="/settings" class="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white font-medium">Settings</a>
+                <button onclick="toggleDarkMode()" class="p-2 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 transition" title="Toggle dark mode">
+                    <span id="theme-icon" class="text-lg">&#x1F319;</span>
+                </button>
             </div>
         </div>
     </nav>
 
     <main class="max-w-7xl mx-auto px-4 py-8">
-        <h1 class="text-2xl font-bold text-gray-800 mb-6">Dashboard</h1>
+        <h1 class="text-2xl font-bold text-gray-800 dark:text-white mb-6">Dashboard</h1>
 
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-            <div class="bg-white rounded-xl shadow-sm p-6 border">
-                <div class="text-sm text-gray-500 mb-1">Status</div>
-                <div class="text-2xl font-bold text-green-600">Online</div>
+        <!-- Stats cards -->
+        <div id="stats-grid" class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+            <div class="bg-white dark:bg-gray-800 rounded-xl shadow-sm p-6 border dark:border-gray-700">
+                <div class="text-sm text-gray-500 dark:text-gray-400 mb-1">Status</div>
+                <div class="text-2xl font-bold text-green-600 dark:text-green-400">Online</div>
             </div>
-            <div class="bg-white rounded-xl shadow-sm p-6 border">
-                <div class="text-sm text-gray-500 mb-1">Server Time</div>
-                <div class="text-lg font-mono text-gray-800">{{.Time}}</div>
+            <div class="bg-white dark:bg-gray-800 rounded-xl shadow-sm p-6 border dark:border-gray-700">
+                <div class="text-sm text-gray-500 dark:text-gray-400 mb-1">Messages</div>
+                <div class="text-2xl font-bold text-gray-800 dark:text-white" id="stat-messages">-</div>
             </div>
-            <div class="bg-white rounded-xl shadow-sm p-6 border">
-                <div class="text-sm text-gray-500 mb-1">Quick Actions</div>
-                <a href="/chat" class="inline-block mt-2 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition text-sm">Start Chat</a>
+            <div class="bg-white dark:bg-gray-800 rounded-xl shadow-sm p-6 border dark:border-gray-700">
+                <div class="text-sm text-gray-500 dark:text-gray-400 mb-1">Conversations</div>
+                <div class="text-2xl font-bold text-gray-800 dark:text-white" id="stat-conversations">-</div>
+            </div>
+            <div class="bg-white dark:bg-gray-800 rounded-xl shadow-sm p-6 border dark:border-gray-700">
+                <div class="text-sm text-gray-500 dark:text-gray-400 mb-1">Active Sessions</div>
+                <div class="text-2xl font-bold text-gray-800 dark:text-white" id="stat-sessions">-</div>
             </div>
         </div>
 
-        <div class="bg-white rounded-xl shadow-sm p-6 border">
-            <h2 class="text-lg font-semibold text-gray-800 mb-4">System Status</h2>
-            <div hx-get="/status" hx-trigger="load, every 10s" hx-target="#status-content">
-                <div id="status-content" class="text-gray-600">Loading...</div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <!-- Recent conversations -->
+            <div class="bg-white dark:bg-gray-800 rounded-xl shadow-sm p-6 border dark:border-gray-700">
+                <h2 class="text-lg font-semibold text-gray-800 dark:text-white mb-4">Recent Conversations</h2>
+                <div id="recent-convs" class="space-y-2">
+                    <p class="text-sm text-gray-400">Loading...</p>
+                </div>
+            </div>
+
+            <!-- System status -->
+            <div class="bg-white dark:bg-gray-800 rounded-xl shadow-sm p-6 border dark:border-gray-700">
+                <h2 class="text-lg font-semibold text-gray-800 dark:text-white mb-4">System Status</h2>
+                <div id="system-status" class="space-y-2">
+                    <p class="text-sm text-gray-400">Loading...</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="mt-6 bg-white dark:bg-gray-800 rounded-xl shadow-sm p-6 border dark:border-gray-700">
+            <h2 class="text-lg font-semibold text-gray-800 dark:text-white mb-4">Quick Actions</h2>
+            <div class="flex flex-wrap gap-3">
+                <a href="/chat" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition text-sm font-medium">Start Chat</a>
+                <a href="/settings" class="bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 px-4 py-2 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition text-sm font-medium">Settings</a>
             </div>
         </div>
     </main>
+
+    <script>
+    function initTheme() {
+        const saved = localStorage.getItem('openbot-theme');
+        if (saved === 'dark' || (!saved && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+            document.documentElement.classList.add('dark');
+            document.getElementById('theme-icon').textContent = '\u2600\uFE0F';
+        }
+    }
+    function toggleDarkMode() {
+        const isDark = document.documentElement.classList.toggle('dark');
+        localStorage.setItem('openbot-theme', isDark ? 'dark' : 'light');
+        document.getElementById('theme-icon').textContent = isDark ? '\u2600\uFE0F' : '\uD83C\uDF19';
+    }
+    initTheme();
+
+    function escapeHtml(t) { const d = document.createElement('div'); d.textContent = t; return d.innerHTML; }
+
+    async function loadStats() {
+        try {
+            const resp = await fetch('/api/stats');
+            if (!resp.ok) return;
+            const data = await resp.json();
+            document.getElementById('stat-messages').textContent = data.messages ?? '-';
+            document.getElementById('stat-conversations').textContent = data.conversations ?? '-';
+            document.getElementById('stat-sessions').textContent = data.active_sessions ?? '-';
+        } catch(e) {}
+    }
+
+    async function loadRecentConversations() {
+        try {
+            const resp = await fetch('/api/conversations');
+            if (!resp.ok) return;
+            const convs = await resp.json();
+            const el = document.getElementById('recent-convs');
+            if (!convs || !convs.length) {
+                el.innerHTML = '<p class="text-sm text-gray-400 dark:text-gray-500">No conversations yet.</p>';
+                return;
+            }
+            el.innerHTML = convs.slice(0, 10).map(c => {
+                const title = c.title || 'Untitled';
+                const date = new Date(c.updated_at).toLocaleDateString();
+                return `<a href="/chat" class="block p-2 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition">
+                    <div class="text-sm text-gray-700 dark:text-gray-300 truncate">${escapeHtml(title)}</div>
+                    <div class="text-xs text-gray-400 dark:text-gray-500">${date}</div>
+                </a>`;
+            }).join('');
+        } catch(e) {}
+    }
+
+    async function loadSystemStatus() {
+        try {
+            const resp = await fetch('/api/system');
+            if (!resp.ok) return;
+            const data = await resp.json();
+            const el = document.getElementById('system-status');
+            el.innerHTML = `
+                <div class="flex items-center gap-2 text-sm">
+                    <span class="w-2 h-2 rounded-full ${data.status === 'ok' ? 'bg-green-500' : 'bg-red-500'}"></span>
+                    <span class="text-gray-700 dark:text-gray-300">Server: ${data.status}</span>
+                </div>
+                <div class="text-sm text-gray-600 dark:text-gray-400">Version: ${data.version || '-'}</div>
+                <div class="text-sm text-gray-600 dark:text-gray-400">Time: ${data.time || '-'}</div>
+            `;
+        } catch(e) {}
+    }
+
+    loadStats();
+    loadRecentConversations();
+    loadSystemStatus();
+    setInterval(loadStats, 30000);
+    </script>
 </body>
 </html>

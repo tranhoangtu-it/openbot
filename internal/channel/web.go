@@ -10,13 +10,15 @@ import (
 	"encoding/json"
 	"fmt"
 	htmltemplate "html/template"
-	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
+
 	"openbot/internal/config"
 	"openbot/internal/domain"
+	"openbot/internal/metrics"
 )
 
 const (
@@ -42,6 +44,7 @@ type Web struct {
 	server  *http.Server
 	tmpl    *htmltemplate.Template
 	version string
+	store   domain.MemoryStore // database for conversations API
 
 	// Config reference for settings API (protected by cfgMu)
 	cfg     *config.Config
@@ -54,12 +57,20 @@ type Web struct {
 	authPassHash string
 
 	// SSE clients keyed by session ID for targeted delivery
-	sseClients   map[string]chan string
+	sseClients   map[string]chan sseEvent
 	sseClientsMu sync.RWMutex
 
 	// Pending responses keyed by session ID
 	pendingResponses   map[string]chan string
 	pendingResponsesMu sync.Mutex
+}
+
+// sseEvent is a structured SSE event sent to the browser.
+type sseEvent struct {
+	Type    string `json:"type"`              // thinking | token | tool_start | tool_end | done | error | message
+	Content string `json:"content,omitempty"`
+	Tool    string `json:"tool,omitempty"`
+	ToolID  string `json:"tool_id,omitempty"`
 }
 
 type WebConfig struct {
@@ -69,6 +80,7 @@ type WebConfig struct {
 	Config     *config.Config
 	ConfigPath string
 	Version    string
+	Store      domain.MemoryStore // optional: for conversations API
 }
 
 func NewWeb(cfg WebConfig) *Web {
@@ -92,7 +104,8 @@ func NewWeb(cfg WebConfig) *Web {
 		version:          cfg.Version,
 		cfg:              cfg.Config,
 		cfgPath:          cfg.ConfigPath,
-		sseClients:       make(map[string]chan string),
+		store:            cfg.Store,
+		sseClients:       make(map[string]chan sseEvent),
 		pendingResponses: make(map[string]chan string),
 	}
 
@@ -114,6 +127,32 @@ func (w *Web) Start(ctx context.Context, bus domain.MessageBus) error {
 
 	// Register outbound handler — routes responses back to the correct session
 	bus.OnOutbound("web", func(msg domain.OutboundMessage) {
+		// Handle stream events (token-by-token, tool start/end, etc.)
+		if msg.StreamEvent != nil {
+			evt := sseEvent{
+				Type:    string(msg.StreamEvent.Type),
+				Content: msg.StreamEvent.Content,
+				Tool:    msg.StreamEvent.Tool,
+				ToolID:  msg.StreamEvent.ToolID,
+			}
+			w.sendSSEEvent(msg.ChatID, evt)
+
+			// When stream is done, also deliver to the pending response channel
+			if msg.StreamEvent.Type == domain.StreamDone && msg.Content != "" {
+				w.pendingResponsesMu.Lock()
+				ch, ok := w.pendingResponses[msg.ChatID]
+				w.pendingResponsesMu.Unlock()
+				if ok {
+					select {
+					case ch <- msg.Content:
+					default:
+					}
+				}
+			}
+			return
+		}
+
+		// Legacy: non-streaming outbound (full response at once)
 		w.pendingResponsesMu.Lock()
 		ch, ok := w.pendingResponses[msg.ChatID]
 		w.pendingResponsesMu.Unlock()
@@ -123,17 +162,24 @@ func (w *Web) Start(ctx context.Context, bus domain.MessageBus) error {
 			default:
 			}
 		}
-		// Send SSE only to the session that owns this chat
-		w.sendSSE(msg.ChatID, msg.Content)
+		w.sendSSEEvent(msg.ChatID, sseEvent{Type: "message", Content: msg.Content})
 	})
 
 	mux := http.NewServeMux()
 
-	// Static assets (logo, icons etc.) — served from embedded web_assets/
+	// Static assets (logo, JS, CSS) — served from embedded web_assets/
 	assetsHandler := http.FileServer(http.FS(assetsFS))
 	mux.Handle("GET /assets/", http.StripPrefix("/assets/", http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		r.URL.Path = "web_assets/" + r.URL.Path
+		name := r.URL.Path
+		r.URL.Path = "web_assets/" + name
 		rw.Header().Set("Cache-Control", "public, max-age=86400")
+		// Ensure correct Content-Type for embedded JS/CSS (net/http may not detect these)
+		switch {
+		case strings.HasSuffix(name, ".js"):
+			rw.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+		case strings.HasSuffix(name, ".css"):
+			rw.Header().Set("Content-Type", "text/css; charset=utf-8")
+		}
 		assetsHandler.ServeHTTP(rw, r)
 	})))
 
@@ -144,16 +190,34 @@ func (w *Web) Start(ctx context.Context, bus domain.MessageBus) error {
 	mux.HandleFunc("GET /status", w.handleStatus) // public endpoint
 	mux.HandleFunc("POST /chat/clear", w.requireAuth(w.handleClear))
 
+	// Conversations API
+	mux.HandleFunc("GET /api/conversations", w.requireAuth(w.handleListConversations))
+	mux.HandleFunc("POST /api/conversations", w.requireAuth(w.handleCreateConversation))
+	mux.HandleFunc("GET /api/conversations/{id}/messages", w.requireAuth(w.handleGetConversationMessages))
+	mux.HandleFunc("DELETE /api/conversations/{id}", w.requireAuth(w.handleDeleteConversation))
+
+	// Stats API
+	mux.HandleFunc("GET /api/stats", w.requireAuth(w.handleStats))
+	mux.HandleFunc("GET /api/system", w.requireAuth(w.handleSystemInfo))
+
 	// Settings page + API (always requires auth)
 	mux.HandleFunc("GET /settings", w.requireAuth(w.handleSettings))
 	mux.HandleFunc("GET /api/config", w.requireAuth(w.handleGetConfig))
 	mux.HandleFunc("PUT /api/config", w.requireAuth(w.handleUpdateConfig))
 	mux.HandleFunc("POST /api/config/save", w.requireAuth(w.handleSaveConfig))
 
+	// Prometheus-compatible metrics endpoint
+	mux.HandleFunc("GET /metrics", metrics.Collector.Handler())
+
 	addr := fmt.Sprintf("%s:%d", w.host, w.port)
 	w.server = &http.Server{
-		Addr:    addr,
-		Handler: mux,
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20, // 1MB
+		// WriteTimeout intentionally omitted: SSE requires long-lived writes.
 	}
 
 	w.logger.Info("web UI started", "addr", "http://"+addr, "auth", w.authEnabled)
@@ -264,7 +328,6 @@ func (w *Web) handleChat(rw http.ResponseWriter, r *http.Request) {
 }
 
 func (w *Web) handleSend(rw http.ResponseWriter, r *http.Request) {
-	// Support both application/x-www-form-urlencoded and multipart/form-data
 	_ = r.ParseMultipartForm(maxFormSize)
 	message := r.FormValue("message")
 	if message == "" {
@@ -274,13 +337,34 @@ func (w *Web) handleSend(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Use persistent session ID as ChatID — this ensures conversation memory
 	sessionID := w.getOrCreateSession(r, rw)
+	provider := r.FormValue("provider") // optional: per-message provider switch
 
-	// Create response channel for this session
+	// Check if the client wants to use streaming (via SSE) or blocking mode.
+	// If "stream=true" is set (or the SSE client is connected), return 202 immediately.
+	streamMode := r.FormValue("stream") == "true"
+
+	inbound := domain.InboundMessage{
+		Channel:   "web",
+		ChatID:    sessionID,
+		SenderID:  "web_user",
+		Content:   message,
+		Timestamp: time.Now(),
+		Provider:  provider,
+	}
+
+	if streamMode {
+		// Non-blocking: publish and return 202
+		w.bus.Publish(inbound)
+		rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+		rw.WriteHeader(http.StatusAccepted)
+		json.NewEncoder(rw).Encode(map[string]string{"status": "accepted", "session": sessionID})
+		return
+	}
+
+	// Blocking mode: wait for full response (legacy behavior)
 	responseCh := make(chan string, 1)
 	w.pendingResponsesMu.Lock()
-	// If a previous request is still pending, cancel it
 	if oldCh, exists := w.pendingResponses[sessionID]; exists {
 		close(oldCh)
 	}
@@ -288,22 +372,14 @@ func (w *Web) handleSend(rw http.ResponseWriter, r *http.Request) {
 	w.pendingResponsesMu.Unlock()
 	defer func() {
 		w.pendingResponsesMu.Lock()
-		// Only delete if it's still our channel (not replaced by another request)
 		if ch, ok := w.pendingResponses[sessionID]; ok && ch == responseCh {
 			delete(w.pendingResponses, sessionID)
 		}
 		w.pendingResponsesMu.Unlock()
 	}()
 
-	w.bus.Publish(domain.InboundMessage{
-		Channel:   "web",
-		ChatID:    sessionID,
-		SenderID:  "web_user",
-		Content:   message,
-		Timestamp: time.Now(),
-	})
+	w.bus.Publish(inbound)
 
-	// Wait for response — also respect client disconnect via r.Context()
 	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
 	timeout := time.NewTimer(requestTimeout)
 	defer timeout.Stop()
@@ -312,7 +388,6 @@ func (w *Web) handleSend(rw http.ResponseWriter, r *http.Request) {
 		if ok {
 			json.NewEncoder(rw).Encode(map[string]string{"content": resp})
 		} else {
-			// Channel was closed by a newer request replacing this one
 			rw.WriteHeader(http.StatusConflict)
 			json.NewEncoder(rw).Encode(map[string]string{"error": "Superseded by new request"})
 		}
@@ -320,7 +395,6 @@ func (w *Web) handleSend(rw http.ResponseWriter, r *http.Request) {
 		rw.WriteHeader(http.StatusGatewayTimeout)
 		json.NewEncoder(rw).Encode(map[string]string{"error": "Request timed out"})
 	case <-r.Context().Done():
-		// Client disconnected — no need to write response
 		w.logger.Info("web client disconnected", "session", sessionID)
 	}
 }
@@ -345,14 +419,14 @@ func (w *Web) handleSSE(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Use session ID to filter SSE messages — only receive your own responses
 	sessionID := w.getOrCreateSession(r, rw)
 
 	rw.Header().Set("Content-Type", "text/event-stream")
 	rw.Header().Set("Cache-Control", "no-cache")
 	rw.Header().Set("Connection", "keep-alive")
+	rw.Header().Set("X-Accel-Buffering", "no") // Disable nginx buffering
 
-	ch := make(chan string, 10)
+	ch := make(chan sseEvent, 50)
 
 	w.sseClientsMu.Lock()
 	w.sseClients[sessionID] = ch
@@ -366,17 +440,144 @@ func (w *Web) handleSSE(rw http.ResponseWriter, r *http.Request) {
 		w.sseClientsMu.Unlock()
 	}()
 
+	// Send initial connection event
+	data, _ := json.Marshal(sseEvent{Type: "connected"})
+	fmt.Fprintf(rw, "data: %s\n\n", data)
+	flusher.Flush()
+
 	ctx := r.Context()
+	heartbeat := time.NewTicker(30 * time.Second)
+	defer heartbeat.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case msg := <-ch:
-			data, _ := json.Marshal(map[string]string{"content": msg})
+		case evt := <-ch:
+			data, _ := json.Marshal(evt)
 			fmt.Fprintf(rw, "data: %s\n\n", data)
+			flusher.Flush()
+		case <-heartbeat.C:
+			fmt.Fprintf(rw, ": keepalive\n\n")
 			flusher.Flush()
 		}
 	}
+}
+
+// --- Conversations API ---
+
+func (w *Web) handleListConversations(rw http.ResponseWriter, r *http.Request) {
+	if w.store == nil {
+		http.Error(rw, `{"error":"store not available"}`, http.StatusServiceUnavailable)
+		return
+	}
+	convs, err := w.store.ListConversations(r.Context(), 50)
+	if err != nil {
+		w.logger.Error("list conversations", "err", err)
+		rw.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(rw).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	rw.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(rw).Encode(convs)
+}
+
+func (w *Web) handleCreateConversation(rw http.ResponseWriter, r *http.Request) {
+	sessionID := w.getOrCreateSession(r, rw)
+	// A new conversation is simply a new session cookie
+	http.SetCookie(rw, &http.Cookie{
+		Name: sessionCookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true,
+	})
+	rw.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(rw).Encode(map[string]string{"status": "new_conversation", "old_session": sessionID})
+}
+
+func (w *Web) handleGetConversationMessages(rw http.ResponseWriter, r *http.Request) {
+	if w.store == nil {
+		http.Error(rw, `{"error":"store not available"}`, http.StatusServiceUnavailable)
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		rw.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(rw).Encode(map[string]string{"error": "missing conversation id"})
+		return
+	}
+	msgs, err := w.store.GetMessages(r.Context(), id, 200)
+	if err != nil {
+		w.logger.Error("get messages", "err", err, "conv", id)
+		rw.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(rw).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	rw.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(rw).Encode(msgs)
+}
+
+func (w *Web) handleDeleteConversation(rw http.ResponseWriter, r *http.Request) {
+	if w.store == nil {
+		http.Error(rw, `{"error":"store not available"}`, http.StatusServiceUnavailable)
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		rw.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(rw).Encode(map[string]string{"error": "missing conversation id"})
+		return
+	}
+
+	// Use the concrete type's DeleteConversation method
+	type deleter interface {
+		DeleteConversation(ctx context.Context, id string) error
+	}
+	if d, ok := w.store.(deleter); ok {
+		if err := d.DeleteConversation(r.Context(), id); err != nil {
+			w.logger.Error("delete conversation", "err", err, "conv", id)
+			rw.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(rw).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	rw.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(rw).Encode(map[string]string{"status": "deleted"})
+}
+
+// --- Stats API ---
+
+func (w *Web) handleStats(rw http.ResponseWriter, r *http.Request) {
+	stats := map[string]any{
+		"version": w.version,
+		"time":    time.Now().Format(time.RFC3339),
+	}
+
+	type counter interface {
+		MessageCount(ctx context.Context) (int64, error)
+		ConversationCount(ctx context.Context) (int64, error)
+	}
+	if c, ok := w.store.(counter); ok {
+		if n, err := c.MessageCount(r.Context()); err == nil {
+			stats["messages"] = n
+		}
+		if n, err := c.ConversationCount(r.Context()); err == nil {
+			stats["conversations"] = n
+		}
+	}
+
+	w.sseClientsMu.RLock()
+	stats["active_sessions"] = len(w.sseClients)
+	w.sseClientsMu.RUnlock()
+
+	rw.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(rw).Encode(stats)
+}
+
+func (w *Web) handleSystemInfo(rw http.ResponseWriter, r *http.Request) {
+	rw.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(rw).Encode(map[string]any{
+		"status":  "ok",
+		"version": w.version,
+		"time":    time.Now().Format(time.RFC3339),
+	})
 }
 
 func (w *Web) handleStatus(rw http.ResponseWriter, r *http.Request) {
@@ -388,120 +589,21 @@ func (w *Web) handleStatus(rw http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (w *Web) handleSettings(rw http.ResponseWriter, r *http.Request) {
-	w.tmpl.ExecuteTemplate(rw, "settings.html", map[string]any{
-		"Title": "OpenBot Settings",
-	})
-}
-
-func (w *Web) handleGetConfig(rw http.ResponseWriter, r *http.Request) {
-	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
-
-	w.cfgMu.RLock()
-	cfg := w.cfg
-	w.cfgMu.RUnlock()
-
-	if cfg == nil {
-		rw.WriteHeader(http.StatusServiceUnavailable)
-		json.NewEncoder(rw).Encode(map[string]string{"error": "config not loaded"})
-		return
-	}
-	sanitized := config.Sanitize(cfg)
-	json.NewEncoder(rw).Encode(sanitized)
-}
-
-func (w *Web) handleUpdateConfig(rw http.ResponseWriter, r *http.Request) {
-	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
-
-	w.cfgMu.Lock()
-	defer w.cfgMu.Unlock()
-
-	if w.cfg == nil {
-		rw.WriteHeader(http.StatusServiceUnavailable)
-		json.NewEncoder(rw).Encode(map[string]string{"error": "config not loaded"})
-		return
-	}
-
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodySize))
-	if err != nil {
-		rw.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(rw).Encode(map[string]string{"error": "read body: " + err.Error()})
-		return
-	}
-	defer r.Body.Close()
-
-	// Partial update: { "path": "general.defaultProvider", "value": "ollama" }
-	var partial struct {
-		Path  string `json:"path"`
-		Value any    `json:"value"`
-	}
-	if err := json.Unmarshal(body, &partial); err == nil && partial.Path != "" {
-		if err := config.SetByPath(w.cfg, partial.Path, partial.Value); err != nil {
-			rw.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(rw).Encode(map[string]string{"error": err.Error()})
-			return
-		}
-		if err := config.Validate(w.cfg); err != nil {
-			rw.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(rw).Encode(map[string]string{"error": "validation: " + err.Error()})
-			return
-		}
-		w.logger.Info("config updated via path", "path", partial.Path, "value", partial.Value)
-		json.NewEncoder(rw).Encode(map[string]string{"status": "updated", "path": partial.Path})
-		return
-	}
-
-	// Full config update — unmarshal into a temporary copy first, then validate
-	var candidate config.Config
-	if err := json.Unmarshal(body, &candidate); err != nil {
-		rw.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(rw).Encode(map[string]string{"error": "invalid config: " + err.Error()})
-		return
-	}
-	if err := config.Validate(&candidate); err != nil {
-		rw.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(rw).Encode(map[string]string{"error": "validation: " + err.Error()})
-		return
-	}
-	*w.cfg = candidate
-
-	w.logger.Info("config updated (full)")
-	json.NewEncoder(rw).Encode(map[string]string{"status": "updated"})
-}
-
-func (w *Web) handleSaveConfig(rw http.ResponseWriter, r *http.Request) {
-	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
-
-	w.cfgMu.RLock()
-	cfg := w.cfg
-	cfgPath := w.cfgPath
-	w.cfgMu.RUnlock()
-
-	if cfg == nil || cfgPath == "" {
-		rw.WriteHeader(http.StatusServiceUnavailable)
-		json.NewEncoder(rw).Encode(map[string]string{"error": "config not available"})
-		return
-	}
-
-	if err := config.Save(cfgPath, cfg); err != nil {
-		rw.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(rw).Encode(map[string]string{"error": "save failed: " + err.Error()})
-		return
-	}
-
-	w.logger.Info("config saved to disk", "path", cfgPath)
-	json.NewEncoder(rw).Encode(map[string]string{"status": "saved", "path": cfgPath})
-}
-
-// sendSSE delivers a message to the SSE client that owns the given session ID.
-func (w *Web) sendSSE(sessionID string, content string) {
+// sendSSEEvent delivers a structured event to the SSE client that owns the given session.
+func (w *Web) sendSSEEvent(sessionID string, evt sseEvent) {
 	w.sseClientsMu.RLock()
 	ch, ok := w.sseClients[sessionID]
 	w.sseClientsMu.RUnlock()
 	if ok {
 		select {
-		case ch <- content:
+		case ch <- evt:
 		default:
+			w.logger.Warn("SSE channel full, dropping event", "session", sessionID, "type", evt.Type)
 		}
 	}
+}
+
+// sendSSE delivers a text message to the SSE client (legacy helper).
+func (w *Web) sendSSE(sessionID string, content string) {
+	w.sendSSEEvent(sessionID, sseEvent{Type: "message", Content: content})
 }

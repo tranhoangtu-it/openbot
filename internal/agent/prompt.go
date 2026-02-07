@@ -6,25 +6,75 @@ import (
 	"log/slog"
 	"path/filepath"
 	"runtime"
+	"strings"
+	"sync"
 	"time"
+
 	"openbot/internal/domain"
 )
+
+const promptCacheTTL = 60 * time.Second
+
+type cachedPrompt struct {
+	content   string
+	expiresAt time.Time
+}
 
 type PromptBuilder struct {
 	workspace string
 	memory    domain.MemoryStore
 	logger    *slog.Logger
+
+	// Prompt cache keyed by channel:chatID
+	promptCache sync.Map
+
+	// Tool definitions cache (built once)
+	toolDefsOnce sync.Once
+	toolDefs     []domain.ToolDefinition
 }
 
 func NewPromptBuilder(workspace string, memory domain.MemoryStore, logger *slog.Logger) *PromptBuilder {
-	return &PromptBuilder{
+	pb := &PromptBuilder{
 		workspace: workspace,
 		memory:    memory,
 		logger:    logger,
 	}
+	// Periodic cleanup of expired prompt cache entries to prevent unbounded growth.
+	go pb.cleanupLoop()
+	return pb
+}
+
+// cleanupLoop evicts expired entries from the prompt cache every 2 minutes.
+func (p *PromptBuilder) cleanupLoop() {
+	ticker := time.NewTicker(2 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		now := time.Now()
+		p.promptCache.Range(func(key, value any) bool {
+			if cp, ok := value.(*cachedPrompt); ok && now.After(cp.expiresAt) {
+				p.promptCache.Delete(key)
+			}
+			return true
+		})
+	}
+}
+
+// CachedToolDefs returns cached tool definitions, building them once.
+func (p *PromptBuilder) CachedToolDefs(tools []domain.ToolDefinition) []domain.ToolDefinition {
+	p.toolDefsOnce.Do(func() {
+		p.toolDefs = tools
+	})
+	return p.toolDefs
 }
 
 func (p *PromptBuilder) BuildSystemPrompt(ctx context.Context, convID string, channel, chatID string) (string, error) {
+	cacheKey := channel + ":" + chatID
+	if cached, ok := p.promptCache.Load(cacheKey); ok {
+		if cp, ok := cached.(*cachedPrompt); ok && time.Now().Before(cp.expiresAt) {
+			return cp.content, nil
+		}
+	}
+
 	now := time.Now().Format("2006-01-02 15:04 (Monday)")
 	workspacePath, err := filepath.Abs(p.workspace)
 	if err != nil {
@@ -61,11 +111,23 @@ IMPORTANT: Reply directly with your text response for normal conversation. Only 
 	if err != nil {
 		p.logger.Warn("failed to load recent memories for prompt", "err", err)
 	} else if len(memories) > 0 {
-		identity += "\n\n## Long-term Memory (recent)\n"
+		var memBuf strings.Builder
+		memBuf.WriteString("\n\n## Long-term Memory (recent)\n")
 		for _, m := range memories {
-			identity += fmt.Sprintf("- [%s] %s\n", m.Category, m.Content)
+			memBuf.WriteString("- [")
+			memBuf.WriteString(m.Category)
+			memBuf.WriteString("] ")
+			memBuf.WriteString(m.Content)
+			memBuf.WriteByte('\n')
 		}
+		identity += memBuf.String()
 	}
+
+	// Cache the result
+	p.promptCache.Store(cacheKey, &cachedPrompt{
+		content:   identity,
+		expiresAt: time.Now().Add(promptCacheTTL),
+	})
 
 	return identity, nil
 }

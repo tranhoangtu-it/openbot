@@ -1,5 +1,5 @@
 # ---- Build stage ----
-FROM golang:1.23-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 RUN apk add --no-cache git
 
@@ -9,7 +9,7 @@ RUN go mod download
 
 COPY . .
 
-ARG VERSION=0.1.0
+ARG VERSION=0.2.0
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -ldflags "-s -w -X main.version=${VERSION}" \
     -o /bin/openbot ./cmd/openbot
@@ -32,8 +32,8 @@ RUN mkdir -p /home/openbot/.openbot/workspace && \
 
 USER openbot
 
-# Default port for Web UI
-EXPOSE 8080
+# Web UI (8080) + API Gateway (9090)
+EXPOSE 8080 9090
 
 # Health check against the status endpoint
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -8,7 +9,14 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
+
 	"openbot/internal/domain"
+)
+
+const (
+	openaiDefaultBase  = "https://api.openai.com/v1"
+	openaiDefaultModel = "gpt-4o-mini"
 )
 
 // OpenAI implements domain.Provider for OpenAI-compatible APIs (GPT-4o, GPT-4o-mini, etc.).
@@ -20,6 +28,7 @@ type OpenAI struct {
 	logger  *slog.Logger
 }
 
+// OpenAIConfig holds the settings for the OpenAI provider.
 type OpenAIConfig struct {
 	APIKey  string
 	APIBase string
@@ -27,38 +36,44 @@ type OpenAIConfig struct {
 	Logger  *slog.Logger
 }
 
+// NewOpenAI creates an OpenAI provider with a shared, pooled HTTP client.
 func NewOpenAI(cfg OpenAIConfig) *OpenAI {
 	if cfg.APIBase == "" {
-		cfg.APIBase = "https://api.openai.com/v1"
+		cfg.APIBase = openaiDefaultBase
 	}
 	if cfg.Model == "" {
-		cfg.Model = "gpt-4o-mini"
+		cfg.Model = openaiDefaultModel
 	}
 	return &OpenAI{
 		apiKey:  cfg.APIKey,
 		apiBase: cfg.APIBase,
 		model:   cfg.Model,
-		client:  &http.Client{Timeout: defaultHTTPTimeout},
+		client:  SharedHTTPClient(defaultHTTPTimeout),
 		logger:  cfg.Logger,
 	}
 }
 
-func (o *OpenAI) Name() string                  { return "openai" }
-func (o *OpenAI) Mode() domain.ProviderMode     { return domain.ModeAPI }
-func (o *OpenAI) Models() []string               { return []string{"gpt-4o", "gpt-4o-mini", "gpt-4.1", "o3-mini"} }
-func (o *OpenAI) SupportsToolCalling() bool       { return true }
+func (o *OpenAI) Name() string              { return "openai" }
+func (o *OpenAI) Mode() domain.ProviderMode { return domain.ModeAPI }
+func (o *OpenAI) Models() []string {
+	return []string{"gpt-4o", "gpt-4o-mini", "gpt-4.1", "o3-mini"}
+}
+func (o *OpenAI) SupportsToolCalling() bool { return true }
 
+// Healthy checks connectivity and API key validity.
 func (o *OpenAI) Healthy(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, "GET", o.apiBase+"/models", nil)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+o.apiKey)
+
 	resp, err := o.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("openai not reachable: %w", err)
 	}
 	defer resp.Body.Close()
+
 	if resp.StatusCode == http.StatusUnauthorized {
 		return fmt.Errorf("openai: invalid API key")
 	}
@@ -67,6 +82,8 @@ func (o *OpenAI) Healthy(ctx context.Context) error {
 	}
 	return nil
 }
+
+// --- Internal request/response types ---
 
 type oaiRequest struct {
 	Model       string       `json:"model"`
@@ -78,11 +95,11 @@ type oaiRequest struct {
 }
 
 type oaiMessage struct {
-	Role       string          `json:"role"`
-	Content    string          `json:"content"`
-	ToolCalls  []oaiToolCall   `json:"tool_calls,omitempty"`
-	ToolCallID string          `json:"tool_call_id,omitempty"`
-	Name       string          `json:"name,omitempty"`
+	Role       string        `json:"role"`
+	Content    string        `json:"content"`
+	ToolCalls  []oaiToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string        `json:"tool_call_id,omitempty"`
+	Name       string        `json:"name,omitempty"`
 }
 
 type oaiTool struct {
@@ -97,9 +114,9 @@ type oaiFunction struct {
 }
 
 type oaiToolCall struct {
-	ID       string         `json:"id"`
-	Type     string         `json:"type"`
-	Function oaiToolCallFn  `json:"function"`
+	ID       string        `json:"id"`
+	Type     string        `json:"type"`
+	Function oaiToolCallFn `json:"function"`
 }
 
 type oaiToolCallFn struct {
@@ -123,39 +140,61 @@ type oaiUsage struct {
 	TotalTokens      int `json:"total_tokens"`
 }
 
-func (o *OpenAI) Chat(ctx context.Context, req domain.ChatRequest) (*domain.ChatResponse, error) {
-	model := req.Model
-	if model == "" {
-		model = o.model
-	}
-
-	msgs := make([]oaiMessage, 0, len(req.Messages))
-	for _, m := range req.Messages {
+// convertMessages transforms domain messages to OpenAI format.
+func convertToOAIMessages(messages []domain.Message) []oaiMessage {
+	msgs := make([]oaiMessage, 0, len(messages))
+	for _, m := range messages {
 		om := oaiMessage{Role: m.Role, Content: m.Content}
 		if m.ToolCallID != "" {
 			om.ToolCallID = m.ToolCallID
 			om.Name = m.ToolName
 		}
-		if len(m.ToolCalls) > 0 {
-			for _, tc := range m.ToolCalls {
-				args, _ := json.Marshal(tc.Arguments)
-				om.ToolCalls = append(om.ToolCalls, oaiToolCall{
-					ID:   tc.ID,
-					Type: "function",
-					Function: oaiToolCallFn{
-						Name:      tc.Name,
-						Arguments: string(args),
-					},
-				})
-			}
+		for _, tc := range m.ToolCalls {
+			args, _ := json.Marshal(tc.Arguments)
+			om.ToolCalls = append(om.ToolCalls, oaiToolCall{
+				ID:   tc.ID,
+				Type: "function",
+				Function: oaiToolCallFn{
+					Name:      tc.Name,
+					Arguments: string(args),
+				},
+			})
 		}
 		msgs = append(msgs, om)
 	}
+	return msgs
+}
 
+// convertToOAITools transforms domain tool definitions to OpenAI format.
+func convertToOAITools(tools []domain.ToolDefinition) []oaiTool {
+	if len(tools) == 0 {
+		return nil
+	}
+	oaiTools := make([]oaiTool, 0, len(tools))
+	for _, t := range tools {
+		oaiTools = append(oaiTools, oaiTool{
+			Type: "function",
+			Function: oaiFunction{
+				Name:        t.Name,
+				Description: t.Description,
+				Parameters:  t.Parameters,
+			},
+		})
+	}
+	return oaiTools
+}
+
+// buildOAIRequest creates a common request body.
+func (o *OpenAI) buildOAIRequest(req domain.ChatRequest, stream bool) oaiRequest {
+	model := req.Model
+	if model == "" {
+		model = o.model
+	}
 	body := oaiRequest{
 		Model:    model,
-		Messages: msgs,
-		Stream:   false,
+		Messages: convertToOAIMessages(req.Messages),
+		Tools:    convertToOAITools(req.Tools),
+		Stream:   stream,
 	}
 	if req.MaxTokens > 0 {
 		body.MaxTokens = req.MaxTokens
@@ -163,33 +202,30 @@ func (o *OpenAI) Chat(ctx context.Context, req domain.ChatRequest) (*domain.Chat
 	if req.Temperature > 0 {
 		body.Temperature = &req.Temperature
 	}
+	return body
+}
 
-	if len(req.Tools) > 0 {
-		for _, t := range req.Tools {
-			body.Tools = append(body.Tools, oaiTool{
-				Type: "function",
-				Function: oaiFunction{
-					Name:        t.Name,
-					Description: t.Description,
-					Parameters:  t.Parameters,
-				},
-			})
-		}
-	}
+// Chat sends a chat completion request with automatic retry on transient errors.
+func (o *OpenAI) Chat(ctx context.Context, req domain.ChatRequest) (*domain.ChatResponse, error) {
+	body := o.buildOAIRequest(req, false)
 
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("marshal: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", o.apiBase+"/chat/completions", bytes.NewReader(jsonBody))
-	if err != nil {
-		return nil, fmt.Errorf("new request: %w", err)
+	endpoint := o.apiBase + "/chat/completions"
+	buildReq := func() (*http.Request, error) {
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(jsonBody))
+		if err != nil {
+			return nil, err
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Authorization", "Bearer "+o.apiKey)
+		return httpReq, nil
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+o.apiKey)
 
-	resp, err := o.client.Do(httpReq)
+	resp, err := doWithRetry(ctx, o.client, buildReq, o.logger)
 	if err != nil {
 		return nil, fmt.Errorf("openai request: %w", err)
 	}
@@ -235,3 +271,107 @@ func (o *OpenAI) Chat(ctx context.Context, req domain.ChatRequest) (*domain.Chat
 
 	return out, nil
 }
+
+// --- Streaming types ---
+
+type oaiStreamDelta struct {
+	Role      string        `json:"role,omitempty"`
+	Content   string        `json:"content,omitempty"`
+	ToolCalls []oaiToolCall `json:"tool_calls,omitempty"`
+}
+
+type oaiStreamChoice struct {
+	Delta        oaiStreamDelta `json:"delta"`
+	FinishReason *string        `json:"finish_reason"`
+}
+
+type oaiStreamChunk struct {
+	Choices []oaiStreamChoice `json:"choices"`
+	Usage   *oaiUsage         `json:"usage,omitempty"`
+}
+
+// ChatStream implements domain.StreamingProvider for OpenAI.
+// It sends token-by-token events through the provided channel.
+func (o *OpenAI) ChatStream(ctx context.Context, req domain.ChatRequest, out chan<- domain.StreamEvent) error {
+	defer close(out)
+
+	body := o.buildOAIRequest(req, true)
+
+	jsonBody, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+
+	endpoint := o.apiBase + "/chat/completions"
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(jsonBody))
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+o.apiKey)
+
+	resp, err := o.client.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("openai stream request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("openai %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	// Parse SSE stream
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+
+		if data == "[DONE]" {
+			out <- domain.StreamEvent{Type: domain.StreamDone}
+			return nil
+		}
+
+		var chunk oaiStreamChunk
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			o.logger.Warn("openai stream: invalid chunk", "error", err)
+			continue
+		}
+
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+
+		delta := chunk.Choices[0].Delta
+		if delta.Content != "" {
+			out <- domain.StreamEvent{
+				Type:    domain.StreamToken,
+				Content: delta.Content,
+			}
+		}
+
+		// Stream tool call deltas
+		for _, tc := range delta.ToolCalls {
+			if tc.Function.Name != "" {
+				out <- domain.StreamEvent{
+					Type:   domain.StreamToolStart,
+					Tool:   tc.Function.Name,
+					ToolID: tc.ID,
+				}
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("openai stream scan: %w", err)
+	}
+
+	return nil
+}
+
+// Verify that OpenAI implements StreamingProvider.
+var _ domain.StreamingProvider = (*OpenAI)(nil)

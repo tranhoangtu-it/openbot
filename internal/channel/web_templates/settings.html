@@ -4,7 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{.Title}}</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="/assets/tailwind.js"></script>
+    <script>tailwind.config={darkMode:'class'}</script>
     <style>
         .toast { animation: slideUp 0.3s ease-out; }
         @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
@@ -23,17 +24,20 @@
         }
     </style>
 </head>
-<body class="bg-gray-100 min-h-screen">
-    <nav class="bg-white shadow-sm border-b">
+<body class="bg-gray-100 dark:bg-gray-900 min-h-screen">
+    <nav class="bg-white dark:bg-gray-800 shadow-sm border-b dark:border-gray-700">
         <div class="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
             <div class="flex items-center space-x-2">
                 <img src="/assets/logo.png" alt="OpenBot" class="w-8 h-8 rounded-lg"/>
-                <a href="/" class="font-bold text-xl text-gray-800 hover:text-blue-600">OpenBot</a>
+                <a href="/" class="font-bold text-xl text-gray-800 dark:text-white hover:text-blue-600">OpenBot</a>
             </div>
             <div class="flex items-center space-x-4">
-                <a href="/" class="text-gray-600 hover:text-gray-900 font-medium">Dashboard</a>
-                <a href="/chat" class="text-gray-600 hover:text-gray-900 font-medium">Chat</a>
-                <a href="/settings" class="text-blue-600 font-medium">Settings</a>
+                <a href="/" class="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white font-medium">Dashboard</a>
+                <a href="/chat" class="text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white font-medium">Chat</a>
+                <a href="/settings" class="text-blue-600 dark:text-blue-400 font-medium">Settings</a>
+                <button onclick="toggleDarkMode()" class="p-2 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 transition" title="Toggle dark mode">
+                    <span id="theme-icon" class="text-lg">&#x1F319;</span>
+                </button>
             </div>
         </div>
     </nav>
@@ -500,6 +504,21 @@
         // Create the provider entry as enabled
         updateField('providers.' + cleanName + '.enabled', true).then(() => loadConfig());
     }
+
+    // Dark mode
+    function initTheme() {
+        const saved = localStorage.getItem('openbot-theme');
+        if (saved === 'dark' || (!saved && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+            document.documentElement.classList.add('dark');
+            document.getElementById('theme-icon').textContent = '\u2600\uFE0F';
+        }
+    }
+    function toggleDarkMode() {
+        const isDark = document.documentElement.classList.toggle('dark');
+        localStorage.setItem('openbot-theme', isDark ? 'dark' : 'light');
+        document.getElementById('theme-icon').textContent = isDark ? '\u2600\uFE0F' : '\uD83C\uDF19';
+    }
+    initTheme();
 
     // Load config on page load
     loadConfig();

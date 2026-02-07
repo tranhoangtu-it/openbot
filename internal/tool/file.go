@@ -6,9 +6,36 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
 	"openbot/internal/domain"
 )
 
+// resolvePath resolves a file path relative to the workspace and prevents traversal.
+func resolvePath(workspace, path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if !filepath.IsAbs(path) && workspace != "" {
+		path = filepath.Join(workspace, path)
+	}
+	resolved, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return "", fmt.Errorf("resolve path: %w", err)
+	}
+	// Enforce workspace restriction to prevent directory traversal.
+	if workspace != "" {
+		wsAbs, err := filepath.Abs(workspace)
+		if err != nil {
+			return "", fmt.Errorf("resolve workspace: %w", err)
+		}
+		if !strings.HasPrefix(resolved, wsAbs+string(filepath.Separator)) && resolved != wsAbs {
+			return "", fmt.Errorf("path %q is outside workspace %q", resolved, wsAbs)
+		}
+	}
+	return resolved, nil
+}
+
+// --- ReadFileTool ---
+
+// ReadFileTool reads the contents of a file inside the workspace.
 type ReadFileTool struct {
 	workspace string
 }
@@ -33,7 +60,7 @@ func (t *ReadFileTool) Execute(ctx context.Context, args map[string]any) (string
 	if path == "" {
 		return "", fmt.Errorf("missing argument: path")
 	}
-	resolved, err := t.resolvePath(path)
+	resolved, err := resolvePath(t.workspace, path)
 	if err != nil {
 		return "", err
 	}
@@ -44,29 +71,9 @@ func (t *ReadFileTool) Execute(ctx context.Context, args map[string]any) (string
 	return string(data), nil
 }
 
-func (t *ReadFileTool) resolvePath(path string) (string, error) {
-	path = strings.TrimSpace(path)
-	if !filepath.IsAbs(path) && t.workspace != "" {
-		path = filepath.Join(t.workspace, path)
-	}
-	// Prevent path traversal — resolve to absolute and verify prefix
-	resolved, err := filepath.Abs(filepath.Clean(path))
-	if err != nil {
-		return "", fmt.Errorf("resolve path: %w", err)
-	}
-	// Enforce workspace restriction
-	if t.workspace != "" {
-		wsAbs, err := filepath.Abs(t.workspace)
-		if err != nil {
-			return "", fmt.Errorf("resolve workspace: %w", err)
-		}
-		if !strings.HasPrefix(resolved, wsAbs+string(filepath.Separator)) && resolved != wsAbs {
-			return "", fmt.Errorf("path %q is outside workspace %q", resolved, wsAbs)
-		}
-	}
-	return resolved, nil
-}
+// --- WriteFileTool ---
 
+// WriteFileTool writes content to a file, creating parent directories as needed.
 type WriteFileTool struct {
 	workspace string
 }
@@ -93,7 +100,7 @@ func (t *WriteFileTool) Execute(ctx context.Context, args map[string]any) (strin
 	if path == "" {
 		return "", fmt.Errorf("missing argument: path")
 	}
-	resolved, err := t.resolvePath(path)
+	resolved, err := resolvePath(t.workspace, path)
 	if err != nil {
 		return "", err
 	}
@@ -107,28 +114,9 @@ func (t *WriteFileTool) Execute(ctx context.Context, args map[string]any) (strin
 	return fmt.Sprintf("Wrote %d bytes to %s", len(content), resolved), nil
 }
 
-func (t *WriteFileTool) resolvePath(path string) (string, error) {
-	path = strings.TrimSpace(path)
-	if !filepath.IsAbs(path) && t.workspace != "" {
-		path = filepath.Join(t.workspace, path)
-	}
-	resolved, err := filepath.Abs(filepath.Clean(path))
-	if err != nil {
-		return "", fmt.Errorf("resolve path: %w", err)
-	}
-	// Enforce workspace restriction
-	if t.workspace != "" {
-		wsAbs, err := filepath.Abs(t.workspace)
-		if err != nil {
-			return "", fmt.Errorf("resolve workspace: %w", err)
-		}
-		if !strings.HasPrefix(resolved, wsAbs+string(filepath.Separator)) && resolved != wsAbs {
-			return "", fmt.Errorf("path %q is outside workspace %q", resolved, wsAbs)
-		}
-	}
-	return resolved, nil
-}
+// --- ListDirTool ---
 
+// ListDirTool lists files and directories at a given path.
 type ListDirTool struct {
 	workspace string
 }
@@ -153,11 +141,11 @@ func (t *ListDirTool) Execute(ctx context.Context, args map[string]any) (string,
 	if path == "" {
 		path = "."
 	}
-	path = strings.TrimSpace(path)
-	if !filepath.IsAbs(path) && t.workspace != "" {
-		path = filepath.Join(t.workspace, path)
+	resolved, err := resolvePath(t.workspace, path)
+	if err != nil {
+		return "", err
 	}
-	entries, err := os.ReadDir(path)
+	entries, err := os.ReadDir(resolved)
 	if err != nil {
 		return "", fmt.Errorf("list dir: %w", err)
 	}
@@ -173,6 +161,7 @@ func (t *ListDirTool) Execute(ctx context.Context, args map[string]any) (string,
 	return strings.Join(lines, "\n"), nil
 }
 
+// Compile-time interface checks.
 var (
 	_ domain.Tool = (*ReadFileTool)(nil)
 	_ domain.Tool = (*WriteFileTool)(nil)

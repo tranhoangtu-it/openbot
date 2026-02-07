@@ -36,7 +36,7 @@ func (t *SysInfoTool) Execute(ctx context.Context, args map[string]any) (string,
 	runtime.ReadMemStats(&mem)
 
 	info := []string{
-		fmt.Sprintf("=== System Information ==="),
+		"=== System Information ===",
 		fmt.Sprintf("Hostname: %s", hostname),
 		fmt.Sprintf("OS: %s/%s", runtime.GOOS, runtime.GOARCH),
 	}
@@ -220,8 +220,6 @@ func getRAMInfo(ctx context.Context) string {
 		if pressure != "" {
 			level := "Normal"
 			switch pressure {
-			case "1":
-				level = "Normal"
 			case "2":
 				level = "Warning"
 			case "4":

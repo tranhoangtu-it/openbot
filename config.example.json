@@ -3,7 +3,8 @@
     "workspace": "~/.openbot/workspace",
     "logLevel": "info",
     "maxIterations": 20,
-    "defaultProvider": "ollama"
+    "defaultProvider": "ollama",
+    "maxConcurrentMessages": 5
   },
   "providers": {
     "ollama": {
@@ -11,9 +12,24 @@
       "mode": "api",
       "apiBase": "http://localhost:11434",
       "defaultModel": "llama3.1:8b"
+    },
+    "openai": {
+      "enabled": false,
+      "mode": "api",
+      "apiKey": "",
+      "defaultModel": "gpt-4o"
+    },
+    "claude": {
+      "enabled": false,
+      "mode": "api",
+      "apiKey": "",
+      "defaultModel": "claude-sonnet-4-20250514"
     }
   },
   "channels": {
+    "cli": {
+      "enabled": true
+    },
     "telegram": {
       "enabled": false,
       "token": "",
@@ -30,8 +46,14 @@
         "passwordHash": ""
       }
     },
-    "cli": {
-      "enabled": true
+    "whatsapp": {
+      "enabled": false,
+      "appId": "",
+      "appSecret": "",
+      "accessToken": "",
+      "verifyToken": "",
+      "phoneNumberId": "",
+      "webhookPath": "/webhook/whatsapp"
     }
   },
   "memory": {
@@ -57,5 +79,28 @@
     "screen": { "enabled": false },
     "web": { "searchProvider": "duckduckgo", "searchApiKey": "" }
   },
-  "cron": { "enabled": true, "tasks": [] }
+  "cron": { "enabled": true, "tasks": [] },
+  "agents": {
+    "enabled": false,
+    "mode": "single",
+    "routerStrategy": "keyword",
+    "agents": {}
+  },
+  "knowledge": {
+    "enabled": false,
+    "maxDocuments": 100,
+    "chunkSize": 512,
+    "chunkOverlap": 50,
+    "searchTopK": 5
+  },
+  "metrics": {
+    "enabled": false,
+    "endpoint": "/metrics",
+    "retentionDays": 30
+  },
+  "api": {
+    "enabled": false,
+    "port": 9090,
+    "apiKey": ""
+  }
 }

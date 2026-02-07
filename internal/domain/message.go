@@ -9,11 +9,13 @@ type InboundMessage struct {
 	Content   string
 	Media     []string
 	Timestamp time.Time
+	Provider  string // optional: override provider for this message
 }
 
 type OutboundMessage struct {
-	Channel string
-	ChatID  string
-	Content string
-	Format  string // text | markdown | html
+	Channel     string
+	ChatID      string
+	Content     string
+	Format      string       // text | markdown | html
+	StreamEvent *StreamEvent // optional: for streaming delivery
 }

@@ -3,10 +3,11 @@ package config
 func Defaults() *Config {
 	return &Config{
 		General: GeneralConfig{
-			Workspace:       "~/.openbot/workspace",
-			LogLevel:        "info",
-			MaxIterations:   20,
-			DefaultProvider: "ollama",
+			Workspace:             "~/.openbot/workspace",
+			LogLevel:              "info",
+			MaxIterations:         20,
+			DefaultProvider:       "ollama",
+			MaxConcurrentMessages: 5,
 		},
 		Providers: map[string]ProviderConfig{
 			"ollama": {
@@ -28,6 +29,10 @@ func Defaults() *Config {
 			},
 			CLI: CLIConfig{
 				Enabled: true,
+			},
+			WhatsApp: WhatsAppConfig{
+				Enabled:     false,
+				WebhookPath: "/webhook/whatsapp",
 			},
 		},
 		Memory: MemoryConfig{
@@ -59,6 +64,27 @@ func Defaults() *Config {
 		},
 		Cron: CronConfig{
 			Enabled: true,
+		},
+		Agents: AgentsConfig{
+			Enabled:        false,
+			Mode:           "single",
+			RouterStrategy: "keyword",
+		},
+		Knowledge: KnowledgeConfig{
+			Enabled:      false,
+			MaxDocuments: 100,
+			ChunkSize:    512,
+			ChunkOverlap: 50,
+			SearchTopK:   5,
+		},
+		Metrics: MetricsConfig{
+			Enabled:       false,
+			Endpoint:      "/metrics",
+			RetentionDays: 30,
+		},
+		API: APIConfig{
+			Enabled: false,
+			Port:    9090,
 		},
 	}
 }
