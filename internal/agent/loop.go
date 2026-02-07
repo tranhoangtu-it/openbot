@@ -328,6 +328,9 @@ func (l *Loop) handleMessage(ctx context.Context, msg domain.InboundMessage) (st
 		}
 	}
 
+	// Strip role-name prefixes that some models leak (e.g. "assistant\n...").
+	finalContent = stripRolePrefix(finalContent)
+
 	if finalContent == "" {
 		finalContent = "I've completed processing but have no additional response."
 	}

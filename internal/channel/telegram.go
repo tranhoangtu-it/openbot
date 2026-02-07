@@ -250,7 +250,7 @@ func (t *Telegram) handleCommand(chatID int64, msg *tgbotapi.Message) {
 	case "help":
 		t.sendMessage(chatID, "📖 *OpenBot Help*\n\nSend me any message and I'll respond using AI.\n\nI can:\n• Answer questions\n• Run shell commands\n• Read/write files\n• Search the web\n• Control your computer\n\nCommands:\n/status — Bot status\n/clear — Clear conversation\n/provider — Current provider info")
 	case "status":
-		t.sendMessage(chatID, fmt.Sprintf("🟢 OpenBot v0.1.0\n\nBot: @%s\nYour ID: %d\nChat ID: %d", t.bot.Self.UserName, msg.From.ID, chatID))
+		t.sendMessage(chatID, fmt.Sprintf("🟢 OpenBot v0.2.0\n\nBot: @%s\nYour ID: %d\nChat ID: %d", t.bot.Self.UserName, msg.From.ID, chatID))
 	case "clear":
 		t.bus.Publish(domain.InboundMessage{
 			Channel:  "telegram",
@@ -297,15 +297,16 @@ func (t *Telegram) sendMessage(chatID int64, text string) {
 }
 
 // sendChunk sends a single message chunk with retry and rate limit handling.
+// Strategy: try Markdown first → on parse error fallback to plain text → retry with backoff.
 func (t *Telegram) sendChunk(chatID int64, text string) {
 	const maxRetries = telegramMaxSendRetries
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		msg := tgbotapi.NewMessage(chatID, text)
-		if attempt == 0 {
+		if attempt == 0 && t.parseMode != "" {
 			msg.ParseMode = t.parseMode
 		}
-		// On subsequent attempts, try without parse mode (markdown may be malformed)
+		// On subsequent attempts: send as plain text (parse mode may be malformed).
 
 		_, err := t.bot.Send(msg)
 		if err == nil {
@@ -314,7 +315,7 @@ func (t *Telegram) sendChunk(chatID int64, text string) {
 
 		errStr := err.Error()
 
-		// Handle Telegram rate limiting (HTTP 429)
+		// Handle Telegram rate limiting (HTTP 429).
 		if strings.Contains(errStr, "Too Many Requests") || strings.Contains(errStr, "429") {
 			retryAfter := time.Duration(attempt+1) * 3 * time.Second
 			t.logger.Warn("telegram rate limited, backing off",
@@ -324,18 +325,20 @@ func (t *Telegram) sendChunk(chatID int64, text string) {
 			continue
 		}
 
-		// Handle markdown parse errors — retry as plain text
-		if attempt == 0 && msg.ParseMode != "" {
-			t.logger.Warn("telegram send failed with parse mode, retrying plain",
+		// Markdown parse error on first attempt — immediately retry as plain text.
+		if attempt == 0 && msg.ParseMode != "" &&
+			strings.Contains(errStr, "can't parse entities") {
+			t.logger.Warn("telegram markdown parse error, retrying as plain text",
 				"err", err, "parseMode", t.parseMode,
 			)
-			msg.ParseMode = ""
-			if _, err2 := t.bot.Send(msg); err2 == nil {
+			plainMsg := tgbotapi.NewMessage(chatID, text)
+			if _, err2 := t.bot.Send(plainMsg); err2 == nil {
 				return
 			}
+			// Plain also failed — fall through to backoff loop.
 		}
 
-		// Exponential backoff for other errors
+		// Exponential backoff for other transient errors.
 		if attempt < maxRetries {
 			backoff := time.Duration(attempt+1) * time.Second
 			t.logger.Warn("telegram send error, retrying", "err", err, "backoff", backoff)

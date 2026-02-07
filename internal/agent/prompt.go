@@ -83,29 +83,63 @@ func (p *PromptBuilder) BuildSystemPrompt(ctx context.Context, convID string, ch
 	goVersion := runtime.Version()
 	osArch := fmt.Sprintf("%s %s", runtime.GOOS, runtime.GOARCH)
 
+	// Build OS-specific hints so the model knows what shell commands are available.
+	osHint := ""
+	switch runtime.GOOS {
+	case "darwin":
+		osHint = `
+## macOS Commands (use with shell tool)
+- Open apps: open -a "AppName" (e.g. open -a Calculator, open -a Safari, open -a "Google Chrome")
+- Open URLs: open "https://example.com"
+- Open files: open /path/to/file
+- Spotlight search: mdfind "keyword"
+- System info: sw_vers, system_profiler SPHardwareDataType
+- Process management: ps aux, top -l 1, kill PID`
+	case "linux":
+		osHint = `
+## Linux Commands (use with shell tool)
+- Open apps: xdg-open, or run the command directly (e.g. firefox, nautilus)
+- System info: uname -a, lsb_release -a, free -h, df -h
+- Process management: ps aux, top -bn1, kill PID`
+	case "windows":
+		osHint = `
+## Windows Commands (use with shell tool)
+- Open apps: start "AppName" (e.g. start calc, start notepad)
+- Open URLs: start "https://example.com"
+- System info: systeminfo, wmic os get caption`
+	}
+
 	identity := fmt.Sprintf(`# OpenBot
 
 You are OpenBot, a helpful AI assistant with access to tools. You can:
-- Read, write, and edit files
-- Execute shell commands (with security checks)
-- Search the web and fetch web pages
-- Control the computer (mouse, keyboard, screen) when enabled
-- Remember important facts and preferences in long-term memory
+- Read, write, and edit files in the workspace
+- Execute shell commands to perform ANY system operation
+- Open applications and URLs on the user's computer
+- Search the web and fetch web page content
+- Control the computer (mouse, keyboard, screenshots) when enabled
+- Manage scheduled tasks (cron)
 
 ## Current Time
 %s
 
 ## Runtime
-%s, Go %s
+%s (%s), Go %s
 
 ## Workspace
-Your workspace is at: %s
-
-## Current Session
+%s
+%s
+## Session
 Channel: %s | Chat ID: %s
 
-IMPORTANT: Reply directly with your text response for normal conversation. Only use tools when you need to perform an action (run a command, read/write files, etc.). Be helpful, accurate, and concise. When using tools, explain what you're doing briefly.`,
-		now, osArch, goVersion, workspacePath, channel, chatID)
+## RULES
+1. When the user asks you to DO something (open an app, run a command, fetch a URL, check system info, etc.), ALWAYS use the appropriate tool. Never say "I can't" without trying first.
+2. Use the shell tool for system operations: opening apps, running commands, checking processes, etc.
+3. Use web_search to search the internet, web_fetch to read a specific URL.
+4. Do NOT output raw JSON in your response. Use the tool calling mechanism.
+5. After tool execution, present results clearly. Do not mention tool names to the user.
+6. Respond in the same language the user writes in.
+7. Be helpful, accurate, and concise.`,
+		now, osArch, runtime.GOOS, goVersion, workspacePath, osHint, channel, chatID)
 
 	memories, err := p.memory.GetRecentMemories(ctx, 5)
 	if err != nil {

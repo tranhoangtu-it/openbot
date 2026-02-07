@@ -86,6 +86,213 @@ func TestExtractToolCalls_NilArguments(t *testing.T) {
 	}
 }
 
+// --- extractToolCallsFromContent with prefix text ---
+
+func TestExtractToolCalls_PrefixedAssistant(t *testing.T) {
+	// Ollama llama models sometimes prepend "assistant\n" before tool call JSON
+	input := "assistant\n{\"name\": \"web_search\", \"parameters\": {\"query\": \"hello world\"}}"
+	calls := extractToolCallsFromContent(input)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call from prefixed content, got %d", len(calls))
+	}
+	if calls[0].Name != "web_search" {
+		t.Fatalf("expected 'web_search', got %q", calls[0].Name)
+	}
+	if calls[0].Arguments["query"] != "hello world" {
+		t.Fatalf("expected 'hello world', got %v", calls[0].Arguments["query"])
+	}
+}
+
+func TestExtractToolCalls_PrefixedNaturalLanguage(t *testing.T) {
+	// Model says something before producing the JSON tool call
+	input := "I'll search for that.\n{\"name\": \"web_search\", \"parameters\": {\"query\": \"OpenBot features\"}}"
+	calls := extractToolCallsFromContent(input)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call from NL-prefixed content, got %d", len(calls))
+	}
+	if calls[0].Name != "web_search" {
+		t.Fatalf("expected 'web_search', got %q", calls[0].Name)
+	}
+}
+
+func TestExtractToolCalls_PrefixedArray(t *testing.T) {
+	input := "Here are the tools:\n[{\"name\": \"shell\", \"arguments\": {\"command\": \"ls\"}}]"
+	calls := extractToolCallsFromContent(input)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call from prefixed array, got %d", len(calls))
+	}
+	if calls[0].Name != "shell" {
+		t.Fatalf("expected 'shell', got %q", calls[0].Name)
+	}
+}
+
+func TestExtractToolCalls_PrefixedWithUnicode(t *testing.T) {
+	// Exact pattern from the Ollama bug: "assistant\n" + JSON with unicode escapes
+	input := "assistant\n{\"name\": \"web_search\", \"parameters\": {\"query\": \"t\\u00f4i ki\\u1ec3m tra\"}}"
+	calls := extractToolCallsFromContent(input)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(calls))
+	}
+	if calls[0].Name != "web_search" {
+		t.Fatalf("expected 'web_search', got %q", calls[0].Name)
+	}
+}
+
+func TestExtractToolCalls_NoBracesInPlainText(t *testing.T) {
+	input := "I cannot help with that request."
+	calls := extractToolCallsFromContent(input)
+	if len(calls) != 0 {
+		t.Fatalf("expected 0 calls for plain text without braces, got %d", len(calls))
+	}
+}
+
+func TestExtractToolCalls_JSONWithTrailingText(t *testing.T) {
+	// Exact pattern from the Ollama bug: JSON tool call followed by natural language
+	input := "{\"name\": \"webfetch\", \"parameters\": {\"url\": \"https://vnexpress.net/\"}}\n\nSau đó, bạn có thể sử dụng kết quả của hàm webfetch."
+	calls := extractToolCallsFromContent(input)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call from JSON with trailing text, got %d", len(calls))
+	}
+	if calls[0].Name != "web_fetch" {
+		t.Fatalf("expected 'web_fetch' (normalized), got %q", calls[0].Name)
+	}
+	if calls[0].Arguments["url"] != "https://vnexpress.net/" {
+		t.Fatalf("expected url arg, got %v", calls[0].Arguments)
+	}
+}
+
+func TestExtractToolCalls_PrefixAndSuffix(t *testing.T) {
+	input := "assistant\n{\"name\": \"shell\", \"arguments\": {\"command\": \"ls\"}}\nI'll run that for you."
+	calls := extractToolCallsFromContent(input)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call from prefix+suffix text, got %d", len(calls))
+	}
+	if calls[0].Name != "shell" {
+		t.Fatalf("expected 'shell', got %q", calls[0].Name)
+	}
+}
+
+// --- normalizeToolName ---
+
+func TestNormalizeToolName_WebFetch(t *testing.T) {
+	if got := normalizeToolName("webfetch"); got != "web_fetch" {
+		t.Fatalf("expected 'web_fetch', got %q", got)
+	}
+}
+
+func TestNormalizeToolName_WebSearch(t *testing.T) {
+	if got := normalizeToolName("websearch"); got != "web_search" {
+		t.Fatalf("expected 'web_search', got %q", got)
+	}
+}
+
+func TestNormalizeToolName_AlreadyCorrect(t *testing.T) {
+	if got := normalizeToolName("web_fetch"); got != "web_fetch" {
+		t.Fatalf("expected 'web_fetch' unchanged, got %q", got)
+	}
+}
+
+func TestNormalizeToolName_CaseInsensitive(t *testing.T) {
+	if got := normalizeToolName("WebFetch"); got != "web_fetch" {
+		t.Fatalf("expected 'web_fetch', got %q", got)
+	}
+}
+
+func TestNormalizeToolName_Unknown(t *testing.T) {
+	if got := normalizeToolName("custom_tool"); got != "custom_tool" {
+		t.Fatalf("expected 'custom_tool' unchanged, got %q", got)
+	}
+}
+
+// --- findJSONBounds ---
+
+func TestFindJSONBounds_SimpleObject(t *testing.T) {
+	s := `{"name": "test"}`
+	start, end := findJSONBounds(s)
+	if start != 0 || end != len(s) {
+		t.Fatalf("expected 0:%d, got %d:%d", len(s), start, end)
+	}
+}
+
+func TestFindJSONBounds_WithPrefix(t *testing.T) {
+	s := `hello {"name": "test"} world`
+	start, end := findJSONBounds(s)
+	if start != 6 || end != 22 {
+		t.Fatalf("expected 6:22, got %d:%d", start, end)
+	}
+	extracted := s[start:end]
+	if extracted != `{"name": "test"}` {
+		t.Fatalf("expected JSON object, got %q", extracted)
+	}
+}
+
+func TestFindJSONBounds_NoJSON(t *testing.T) {
+	s := "just plain text"
+	start, end := findJSONBounds(s)
+	if start != -1 || end != -1 {
+		t.Fatalf("expected -1:-1, got %d:%d", start, end)
+	}
+}
+
+func TestFindJSONBounds_NestedBraces(t *testing.T) {
+	s := `{"outer": {"inner": "val"}} trailing`
+	start, end := findJSONBounds(s)
+	expected := `{"outer": {"inner": "val"}}`
+	if start != 0 || end != len(expected) {
+		t.Fatalf("expected 0:%d, got %d:%d", len(expected), start, end)
+	}
+}
+
+func TestFindJSONBounds_StringWithBraces(t *testing.T) {
+	// Braces inside a JSON string should not confuse the parser
+	s := `{"text": "hello {world}"} after`
+	start, end := findJSONBounds(s)
+	expected := `{"text": "hello {world}"}`
+	if s[start:end] != expected {
+		t.Fatalf("expected %q, got %q", expected, s[start:end])
+	}
+}
+
+// --- stripRolePrefix ---
+
+func TestStripRolePrefix_AssistantNewline(t *testing.T) {
+	input := "assistant\nHello, how can I help?"
+	result := stripRolePrefix(input)
+	if result != "Hello, how can I help?" {
+		t.Fatalf("expected stripped content, got %q", result)
+	}
+}
+
+func TestStripRolePrefix_AssistantColonSpace(t *testing.T) {
+	input := "Assistant: Here is the info."
+	result := stripRolePrefix(input)
+	if result != "Here is the info." {
+		t.Fatalf("expected stripped content, got %q", result)
+	}
+}
+
+func TestStripRolePrefix_NoPrefix(t *testing.T) {
+	input := "Hello, I am your AI assistant."
+	result := stripRolePrefix(input)
+	if result != input {
+		t.Fatalf("content without prefix should be unchanged, got %q", result)
+	}
+}
+
+func TestStripRolePrefix_Empty(t *testing.T) {
+	result := stripRolePrefix("")
+	if result != "" {
+		t.Fatalf("empty string should stay empty, got %q", result)
+	}
+}
+
+func TestStripRolePrefix_OnlyPrefix(t *testing.T) {
+	result := stripRolePrefix("assistant\n")
+	if result != "" {
+		t.Fatalf("content with only prefix should be empty, got %q", result)
+	}
+}
+
 // --- sanitizeJSONEscapes ---
 
 func TestSanitizeJSONEscapes_ValidJSON(t *testing.T) {

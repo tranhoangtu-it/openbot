@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/License-MIT-green" alt="License"/>
   <img src="https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Docker-lightgrey" alt="Platform"/>
   <img src="https://img.shields.io/badge/Version-0.2.0-blue" alt="Version"/>
-  <img src="https://img.shields.io/badge/Tests-89%20passed-brightgreen" alt="Tests"/>
+  <img src="https://img.shields.io/badge/Tests-94%20passed-brightgreen" alt="Tests"/>
 </p>
 
 ---
@@ -433,7 +433,7 @@ make init             # Initialize config
 
 ## Testing
 
-### Go Unit Tests (89 tests)
+### Go Unit Tests (94 tests)
 
 ```bash
 make test    # go test ./... -v -race -count=1
@@ -441,7 +441,7 @@ make test    # go test ./... -v -race -count=1
 
 | Package | Tests | Coverage |
 |---------|-------|----------|
-| `internal/agent` | 35 | loop, parser, ratelimit, session, security commands |
+| `internal/agent` | 40 | loop, parser (embedded JSON extraction), ratelimit, session, security commands |
 | `internal/config` | 25 | validate, load/save, accessor, flex types |
 | `internal/security` | 16 | blacklist, whitelist, confirm, policy |
 | `internal/tool` | 13 | registry, parameters, args |
