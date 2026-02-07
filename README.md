@@ -397,6 +397,8 @@ openbot/
 │   ├── browser/bridge.go             #   Headless Chrome bridge
 │   └── config/                       #   Config (v2 schema)
 ├── docs/                             # Documentation (Vietnamese)
+│   ├── attachment/                   #   File Attachment feature analysis (UR/SR)
+│   └── improved/                     #   Improvement proposals & roadmap
 ├── Makefile                          # Build, test, docker, cross-compile
 ├── Dockerfile                        # Multi-stage Docker build (golang:1.25-alpine)
 ├── docker-compose.yml                # Ready-to-run composition
@@ -496,6 +498,8 @@ make docker-compose   # Docker Compose (detached)
 
 Full documentation (Vietnamese) is available in the `docs/` directory:
 
+### Core Documentation
+
 | File | Topic |
 |------|-------|
 | `01-tong-quan.md` | Overview |
@@ -506,6 +510,29 @@ Full documentation (Vietnamese) is available in the `docs/` directory:
 | `06-bao-mat.md` | Security |
 | `07-trien-khai.md` | Deployment |
 | `08-kiem-thu.md` | Testing |
+
+### Feature Analysis — File Attachment (`docs/attachment/`)
+
+Requirement analysis for the upcoming file attachment feature — enabling users to upload documents, code, and data files for Agent analysis via RAG.
+
+| File | Topic |
+|------|-------|
+| `README.md` | Feature overview & architecture diagram |
+| `01-requirement-analysis.md` | Full UR/SR analysis, gap analysis, consistency check |
+
+### Improvement Proposals (`docs/improved/`)
+
+| File | Topic |
+|------|-------|
+| `01-phan-tich-hien-trang.md` | Current state analysis |
+| `02-de-xuat-tinh-nang.md` | Feature proposals |
+| `03-thiet-ke-ui.md` | UI design |
+| `04-nang-cap-performance.md` | Performance upgrades |
+| `05-nang-cap-kien-truc.md` | Architecture upgrades |
+| `06-roadmap.md` | Roadmap |
+| `07-kien-truc-muc-tieu.md` | Target architecture |
+| `08-whatsapp-integration.md` | WhatsApp integration |
+| `09-he-thong-skills.md` | Skills system |
 
 ---
 

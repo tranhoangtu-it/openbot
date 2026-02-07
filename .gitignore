@@ -1,7 +1,7 @@
 # Build output
 build/
 dist/
-openbot
+/openbot
 *.exe
 
 # Config with secrets (use config.example.json as template)
