@@ -68,6 +68,20 @@ func (f *Factory) registerDefaults() {
 		// API mode — use OpenAI-compatible endpoint (Gemini supports this).
 		return NewOpenAI(OpenAIConfig{APIKey: pc.APIKey, APIBase: pc.APIBase, Model: pc.DefaultModel, Logger: logger})
 	}
+
+	// OpenAI-compatible providers: DeepSeek, OpenRouter, Groq, Together AI
+	oaiCompatProviders := []string{"deepseek", "openrouter", "groq", "together"}
+	for _, name := range oaiCompatProviders {
+		providerName := name // capture for closure
+		f.constructors[providerName] = func(pc config.ProviderConfig, logger *slog.Logger) domain.Provider {
+			return NewOpenAI(OpenAIConfig{
+				APIKey:  pc.APIKey,
+				APIBase: pc.APIBase,
+				Model:   pc.DefaultModel,
+				Logger:  logger,
+			})
+		}
+	}
 }
 
 // Get returns the provider with the given name, or the default if name is empty.
