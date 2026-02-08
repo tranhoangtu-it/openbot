@@ -6,7 +6,15 @@
 
 <p align="center">
   <strong>Open-Source Personal AI Assistant</strong><br/>
-  Go-native &bull; Multi-LLM &bull; Multi-Channel &bull; Tool-Augmented &bull; Secure
+  <em>The AI that runs on your machine — multi-LLM, multi-channel, tool-augmented, your data stays yours.</em>
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick Start</a> &bull;
+  <a href="docs/projects/README.md">Doc hub</a> &bull;
+  <a href="#configuration">Configuration</a> &bull;
+  <a href="#cli-commands">CLI</a> &bull;
+  <a href="#documentation">Documentation</a>
 </p>
 
 <p align="center">
@@ -14,7 +22,7 @@
   <img src="https://img.shields.io/badge/License-MIT-green" alt="License"/>
   <img src="https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Docker-lightgrey" alt="Platform"/>
   <img src="https://img.shields.io/badge/Version-0.2.0-blue" alt="Version"/>
-  <img src="https://img.shields.io/badge/Tests-94%20passed-brightgreen" alt="Tests"/>
+  <img src="https://img.shields.io/badge/Tests-269%20Go%20%2B%2019%20E2E-brightgreen" alt="Tests"/>
 </p>
 
 ---
@@ -36,13 +44,18 @@ OpenBot is a self-hosted AI assistant written entirely in Go. It connects to mul
 - **Provider switching** — Select LLM provider per message
 - **Parallel tool execution** — Multiple tool calls run concurrently (up to 5)
 - **WhatsApp channel** — Cloud API integration with webhook signature verification
+- **Slack & Discord** — Socket Mode (Slack), bot token + optional guild (Discord); see [channels-slack-discord](docs/projects/presales/channels-slack-discord.md)
 - **API Gateway** — OpenAI-compatible `/v1/chat/completions` endpoint
+- **MCP (Model Context Protocol)** — Connect MCP servers; tools appear as `mcp_<server>_<name>` in the agent
+- **Per-session token cap (R5)** — `maxTokensPerSession` and `tokenBudgetAlert` to control cost and usage
+- **Onboarding wizard** — `openbot wizard` for interactive setup (workspace → provider → channel)
 - **Skills system** — Reusable workflows (built-in + user YAML definitions)
 - **Knowledge engine (RAG)** — Document upload, FTS5 chunked search, context injection
 - **Multi-agent router** — Keyword-based routing to specialized agent profiles
 - **Event system** — Internal pub/sub for cross-component communication
 - **Prometheus metrics** — Built-in `/metrics` endpoint
 - **Vendored assets** — Tailwind, marked.js, highlight.js, htmx bundled in binary (no CDN)
+- **CLI ops** — `openbot doctor` (diagnostics), `openbot backup` / `restore`, `openbot install-daemon` / `uninstall-daemon`
 
 ### Performance & Hardening
 - **Singleton HTTP client** — All LLM providers share one connection pool via `sync.Once` (100 idle conns, HTTP/2)
@@ -71,13 +84,15 @@ OpenBot is a self-hosted AI assistant written entirely in Go. It connects to mul
 
 ### Channels (Interfaces)
 
-| Channel | Description |
-|---------|-------------|
-| **CLI** | Interactive REPL with animated spinner, inline confirmation prompts |
-| **Telegram Bot** | Full-featured bot with inline keyboard confirmations, Markdown rendering |
-| **Web UI** | Dashboard with stats, streaming chat with sidebar, dark mode, settings editor |
-| **WhatsApp** | Cloud API integration with webhook verification |
-| **API Gateway** | OpenAI-compatible `/v1/chat/completions` endpoint |
+| Channel | Setup | Description |
+|---------|-------|-------------|
+| **CLI** | Easy | `./build/openbot chat` — no extra config. [Quick Start](#quick-start) |
+| **Telegram Bot** | Easy | Set `channels.telegram.token` and `allowFrom`. [Configuration](#configuration) |
+| **Web UI** | Easy | Set `channels.web.enabled: true`; optional auth in `channels.web.auth`. [Configuration](#configuration) |
+| **WhatsApp** | Medium | Cloud API: `appId`, `appSecret`, `accessToken`, webhook. [Configuration](#configuration) |
+| **Slack** | Medium | Socket Mode: `channels.slack.botToken`, `appToken`. [Slack & Discord setup](docs/projects/presales/channels-slack-discord.md) |
+| **Discord** | Easy | `channels.discord.token`, optional `guildId`. [Slack & Discord setup](docs/projects/presales/channels-slack-discord.md) |
+| **API Gateway** | Easy | Set `api.enabled: true`, `api.port`, `api.apiKey`. [Configuration](#configuration) |
 
 ### LLM Providers
 
@@ -102,6 +117,7 @@ OpenBot is a self-hosted AI assistant written entirely in Go. It connects to mul
 | `system_info` | Detailed system info — CPU, RAM, GPU, Disk, OS, network |
 | `screen` | Screen control — mouse, keyboard, screenshots (robotgo) |
 | `cron` | Create, list, remove scheduled tasks at runtime |
+| **MCP tools** | Tools from [MCP](https://modelcontextprotocol.io) servers (config `mcp.enabled`, `mcp.servers`); names prefixed `mcp_<server>_<name>` |
 
 ### Security Engine
 
@@ -141,6 +157,42 @@ OpenBot is a self-hosted AI assistant written entirely in Go. It connects to mul
 
 ## Quick Start
 
+**TL;DR — 3 steps:**
+
+```bash
+# 1. Build (Go 1.25+)
+make build
+
+# 2. Initialize config and workspace
+./build/openbot init
+
+# 3. Chat (CLI) or start full gateway (Web + channels)
+./build/openbot chat
+# or: ./build/openbot gateway
+```
+
+Alternatively, run **`./build/openbot wizard`** for interactive setup (workspace → provider → channel); config is written automatically.
+
+### CLI commands {#cli-commands}
+
+| Command | Description |
+|---------|-------------|
+| `openbot init` | Create default config and workspace |
+| `openbot chat` | Interactive CLI chat (single channel) |
+| `openbot gateway` | Start all channels + agent (Web, Telegram, Slack, Discord, API, etc.) |
+| `openbot wizard` | Interactive onboarding (workspace → provider → channel) |
+| `openbot config get/set/list/path` | View or change config |
+| `openbot status` | Show provider health |
+| `openbot login [provider]` | Open browser to log in (e.g. ChatGPT Web, Gemini) |
+| `openbot backup` | Backup memory DB and config |
+| `openbot restore` | Restore from backup |
+| `openbot doctor` | Run diagnostics (config, workspace, provider, memory) |
+| `openbot install-daemon` | Install as a system service (launchd/systemd) |
+| `openbot uninstall-daemon` | Remove daemon installation |
+
+<details>
+<summary>Full steps (clone, build, init, run)</summary>
+
 ```bash
 # Clone the repository
 git clone https://github.com/your-org/openbot.git
@@ -158,6 +210,7 @@ make build
 # Or start the full gateway (all channels + agent)
 ./build/openbot gateway
 ```
+</details>
 
 ### Prerequisites
 
@@ -194,7 +247,9 @@ Use `config.example.json` as a template with all available options.
     "logLevel": "info",
     "maxIterations": 20,
     "defaultProvider": "ollama",
-    "maxConcurrentMessages": 5         // parallel message processing
+    "maxConcurrentMessages": 5,        // parallel message processing
+    "maxTokensPerSession": 0,          // 0=off; per-conversation token cap (R5)
+    "tokenBudgetAlert": 0              // 0=off; log warning when session reaches this
   },
   "providers": {
     "ollama": {
@@ -235,7 +290,9 @@ Use `config.example.json` as a template with all available options.
       "appId": "", "appSecret": "", "accessToken": "",
       "verifyToken": "", "phoneNumberId": "",
       "webhookPath": "/webhook/whatsapp"
-    }
+    },
+    "discord": { "enabled": false, "token": "", "guildId": "" },
+    "slack": { "enabled": false, "botToken": "", "appToken": "" }
   },
   "memory": {
     "enabled": true,
@@ -280,9 +337,17 @@ Use `config.example.json` as a template with all available options.
     "enabled": false,
     "port": 9090,
     "apiKey": ""
+  },
+  "mcp": {
+    "enabled": false,
+    "servers": [
+      { "name": "my-mcp", "transport": "stdio", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-everything"] }
+    ]
   }
 }
 ```
+
+**MCP (Model Context Protocol)** — Set `mcp.enabled: true` and add entries to `mcp.servers` (each: `name`, `transport` — `stdio` \| `http` \| `sse`, and for stdio: `command`/`args`/`env`; for http/sse: `url`). Tools from connected servers are registered with prefix `mcp_<server>_<toolname>`. See [architecture/06-mcp-integration-note.md](docs/projects/architecture/06-mcp-integration-note.md).
 
 ---
 
@@ -304,7 +369,7 @@ When `channels.web.enabled` is `true`, the Web UI is available at `http://127.0.
 | GET | `/api/config` | Get current config |
 | PUT | `/api/config` | Update config value |
 | POST | `/api/config/save` | Save config to disk |
-| POST | `/chat/send` | Send message (supports `stream=true` for async mode) |
+| POST | `/chat/send` | Send message (multipart: `message`, optional `files`; `stream=true` for async) |
 | POST | `/chat/clear` | Clear current session |
 | GET | `/chat/stream` | SSE stream with structured events |
 | GET | `/api/conversations` | List all conversations |
@@ -343,71 +408,6 @@ curl http://localhost:9090/v1/chat/completions \
 
 ---
 
-## Project Structure
-
-```
-openbot/
-├── cmd/openbot/main.go              # CLI entry point (Cobra commands)
-├── internal/
-│   ├── domain/                       # Interfaces & types
-│   │   ├── provider.go               #   Provider, StreamingProvider, StreamEvent
-│   │   ├── skill.go                  #   SkillDefinition, SkillRegistry, SkillExecutor
-│   │   ├── knowledge.go              #   KnowledgeStore, Document, DocumentChunk
-│   │   ├── memory.go                 #   MemoryStore (with provider/model/latency fields)
-│   │   └── message.go                #   InboundMessage, OutboundMessage (with StreamEvent)
-│   ├── agent/                        # Agent engine
-│   │   ├── loop.go                   #   Core loop: streaming (strings.Builder), parallel tools
-│   │   ├── parser.go                 #   Tool call extraction from LLM content
-│   │   ├── prompt.go                 #   System prompt builder with caching (60s TTL + cleanup)
-│   │   ├── router.go                 #   Multi-agent router (pre-computed keywords)
-│   │   ├── context_manager.go        #   Centralized context: memory + skills + knowledge
-│   │   ├── session.go                #   Conversation & session manager
-│   │   └── ratelimit.go              #   Token bucket rate limiter
-│   ├── provider/                     # LLM providers
-│   │   ├── openai.go                 #   OpenAI API + ChatStream (shared helpers)
-│   │   ├── claude.go                 #   Claude API + ChatStream (shared helpers)
-│   │   ├── ollama.go                 #   Ollama (streaming)
-│   │   ├── factory.go                #   Provider factory (double-check locking cache)
-│   │   ├── retry.go                  #   Exponential backoff with jitter
-│   │   └── httpclient.go             #   Singleton HTTP client (sync.Once, HTTP/2)
-│   ├── channel/                      # User-facing channels
-│   │   ├── web.go                    #   Web UI (SSE streaming, conversations API, hardened server)
-│   │   ├── web_config.go             #   Web config API handlers
-│   │   ├── whatsapp.go               #   WhatsApp Cloud API channel
-│   │   ├── api_gateway.go            #   OpenAI-compatible API gateway (sync.Mutex, body limits)
-│   │   ├── telegram.go               #   Telegram bot
-│   │   ├── cli.go                    #   CLI REPL
-│   │   ├── web_templates/            #   HTML templates (dark mode, sidebar, streaming)
-│   │   └── web_assets/               #   Vendored JS/CSS (Tailwind, marked, hljs, htmx)
-│   ├── skill/                        # Skills system
-│   │   ├── registry.go               #   Skill registry (pre-compiled regex, cached keywords)
-│   │   ├── executor.go               #   Multi-step skill execution
-│   │   └── yaml_loader.go            #   Load user skills from YAML
-│   ├── knowledge/                    # Knowledge engine (RAG)
-│   │   └── engine.go                 #   Document chunking, FTS5 search, context building
-│   ├── metrics/                      # Observability
-│   │   └── collector.go              #   Prometheus-compatible metrics
-│   ├── memory/
-│   │   └── store.go                  #   SQLite (read/write split, v2 schema)
-│   ├── security/engine.go            #   Security policy engine + audit
-│   ├── bus/
-│   │   ├── bus.go                    #   Message bus (Go channels)
-│   │   └── events.go                 #   Event system (pub/sub)
-│   ├── tool/                         #   9 agent tools
-│   ├── browser/bridge.go             #   Headless Chrome bridge
-│   └── config/                       #   Config (v2 schema)
-├── docs/                             # Documentation (Vietnamese)
-│   ├── attachment/                   #   File Attachment feature analysis (UR/SR)
-│   └── improved/                     #   Improvement proposals & roadmap
-├── Makefile                          # Build, test, docker, cross-compile
-├── Dockerfile                        # Multi-stage Docker build (golang:1.25-alpine)
-├── docker-compose.yml                # Ready-to-run composition
-├── config.example.json               # Full config template
-└── go.mod
-```
-
----
-
 ## Makefile Targets
 
 ```bash
@@ -428,25 +428,6 @@ make docker-compose   # Docker Compose (detached)
 make vendor-assets    # Download vendored frontend assets
 make init             # Initialize config
 ```
-
----
-
-## Testing
-
-### Go Unit Tests (94 tests)
-
-```bash
-make test    # go test ./... -v -race -count=1
-```
-
-| Package | Tests | Coverage |
-|---------|-------|----------|
-| `internal/agent` | 40 | loop, parser (embedded JSON extraction), ratelimit, session, security commands |
-| `internal/config` | 25 | validate, load/save, accessor, flex types |
-| `internal/security` | 16 | blacklist, whitelist, confirm, policy |
-| `internal/tool` | 13 | registry, parameters, args |
-
-All tests pass with the Go race detector enabled (`-race`), confirming zero data races across all concurrent subsystems.
 
 ---
 
@@ -494,6 +475,18 @@ make docker-compose   # Docker Compose (detached)
 
 ---
 
+## Community & testimonials
+
+We only list **real** testimonials (tweets, blog posts, case studies) with explicit consent. If you've used OpenBot and are happy to be quoted or linked, see [docs/social-proof.md](docs/social-proof.md) for how to submit. No fabricated quotes.
+
+---
+
+## Contributing & Security
+
+- **Contributing**: See [CONTRIBUTING.md](CONTRIBUTING.md) for how to contribute code, report bugs, and propose features.
+- **Security**: See [SECURITY.md](SECURITY.md) for supported versions, how to report vulnerabilities, security headers, and dependency audit.
+
+---
 ## License
 
 MIT
