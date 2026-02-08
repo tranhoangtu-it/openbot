@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"openbot/internal/domain"
@@ -62,94 +61,21 @@ func NewSQLiteStore(dbPath string, logger *slog.Logger) (*SQLiteStore, error) {
 
 	store := &SQLiteStore{writer: writer, reader: reader, logger: logger}
 
-	if err := store.migrate(); err != nil {
+	// Run versioned migrations via the new migration system.
+	if err := RunMigrations(writer, logger); err != nil {
 		writer.Close()
 		reader.Close()
 		return nil, fmt.Errorf("database migration failed: %w", err)
 	}
 
-	return store, nil
-}
-
-func (s *SQLiteStore) migrate() error {
-	// Phase 1: original schema
-	schema := `
-	CREATE TABLE IF NOT EXISTS conversations (
-		id          TEXT PRIMARY KEY,
-		title       TEXT,
-		provider    TEXT,
-		model       TEXT,
-		created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
-		updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
-	);
-
-	CREATE TABLE IF NOT EXISTS messages (
-		id              INTEGER PRIMARY KEY AUTOINCREMENT,
-		conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-		role            TEXT NOT NULL,
-		content         TEXT,
-		tool_calls      TEXT,
-		tool_call_id    TEXT,
-		tool_name       TEXT,
-		tokens_in       INTEGER DEFAULT 0,
-		tokens_out      INTEGER DEFAULT 0,
-		created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
-	);
-	CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, created_at);
-
-	CREATE TABLE IF NOT EXISTS memories (
-		id          INTEGER PRIMARY KEY AUTOINCREMENT,
-		category    TEXT NOT NULL,
-		content     TEXT NOT NULL,
-		source      TEXT,
-		importance  INTEGER DEFAULT 5,
-		created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
-		expires_at  DATETIME
-	);
-	CREATE INDEX IF NOT EXISTS idx_memories_cat ON memories(category);
-
-	CREATE TABLE IF NOT EXISTS audit_log (
-		id          INTEGER PRIMARY KEY AUTOINCREMENT,
-		action      TEXT NOT NULL,
-		tool_name   TEXT,
-		command     TEXT,
-		result      TEXT,
-		details     TEXT,
-		created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
-	);
-	CREATE INDEX IF NOT EXISTS idx_audit_time ON audit_log(created_at);
-	`
-
-	if _, err := s.writer.Exec(schema); err != nil {
-		return fmt.Errorf("base schema: %w", err)
-	}
-
-	// Phase 2 (v2): add new columns to messages + new tables
-	v2Migrations := []string{
-		// New columns on messages (safe: ALTER TABLE ADD COLUMN is a no-op if column exists in modernc/sqlite)
-		`ALTER TABLE messages ADD COLUMN provider TEXT DEFAULT ''`,
-		`ALTER TABLE messages ADD COLUMN model TEXT DEFAULT ''`,
-		`ALTER TABLE messages ADD COLUMN latency_ms INTEGER DEFAULT 0`,
-
-		// Knowledge base: documents
-		`CREATE TABLE IF NOT EXISTS documents (
-			id          TEXT PRIMARY KEY,
-			name        TEXT NOT NULL,
-			mime_type   TEXT DEFAULT '',
-			size        INTEGER DEFAULT 0,
-			chunk_count INTEGER DEFAULT 0,
-			created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
-		)`,
-
-		// Knowledge base: FTS5 for chunk search
+	// Legacy compatibility: ensure old FTS5 tables and metrics tables still exist
+	// (these were in the old v2 migration but not in the new versioned migrations
+	// as they use a different schema). Apply idempotently.
+	legacyDDLs := []string{
 		`CREATE VIRTUAL TABLE IF NOT EXISTS chunks USING fts5(
-			document_id,
-			chunk_index,
-			content,
+			document_id, chunk_index, content,
 			tokenize='porter unicode61'
 		)`,
-
-		// Metrics aggregation (hourly buckets)
 		`CREATE TABLE IF NOT EXISTS metrics_hourly (
 			id          INTEGER PRIMARY KEY AUTOINCREMENT,
 			metric_name TEXT NOT NULL,
@@ -158,8 +84,6 @@ func (s *SQLiteStore) migrate() error {
 			bucket_time DATETIME NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_metrics_bucket ON metrics_hourly(metric_name, bucket_time)`,
-
-		// User-defined skills
 		`CREATE TABLE IF NOT EXISTS skills (
 			name        TEXT PRIMARY KEY,
 			description TEXT DEFAULT '',
@@ -170,26 +94,13 @@ func (s *SQLiteStore) migrate() error {
 			updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
 	}
-
-	for _, ddl := range v2Migrations {
-		if _, err := s.writer.Exec(ddl); err != nil {
-			// Ignore "duplicate column" errors from ALTER TABLE
-			if !isDuplicateColumnErr(err) {
-				return fmt.Errorf("v2 migration: %w", err)
-			}
+	for _, ddl := range legacyDDLs {
+		if _, err := writer.Exec(ddl); err != nil {
+			logger.Debug("legacy DDL skipped", "err", err)
 		}
 	}
 
-	return nil
-}
-
-// isDuplicateColumnErr returns true if the error is a duplicate column error from SQLite.
-func isDuplicateColumnErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "duplicate column") || strings.Contains(msg, "already exists")
+	return store, nil
 }
 
 func (s *SQLiteStore) CreateConversation(ctx context.Context, conv domain.Conversation) error {
@@ -543,4 +454,10 @@ func (s *SQLiteStore) Close() error {
 		firstErr = err
 	}
 	return firstErr
+}
+
+// WriterDB returns the writer *sql.DB for use by components that need to write to the same
+// database (e.g. attachments table). Callers must not hold the connection for long.
+func (s *SQLiteStore) WriterDB() *sql.DB {
+	return s.writer
 }
