@@ -429,3 +429,88 @@ func TestCoalesce_BothNil(t *testing.T) {
 		t.Fatalf("expected empty map, got %v", result)
 	}
 }
+
+// --- ParseCommand ---
+
+func TestParseCommand_ValidCommand(t *testing.T) {
+	cmd := ParseCommand("/help")
+	if cmd == nil {
+		t.Fatal("expected command, got nil")
+	}
+	if cmd.Name != "help" {
+		t.Fatalf("expected 'help', got %q", cmd.Name)
+	}
+	if len(cmd.Args) != 0 {
+		t.Fatalf("expected no args, got %v", cmd.Args)
+	}
+}
+
+func TestParseCommand_WithArgs(t *testing.T) {
+	cmd := ParseCommand("/model gpt-4o")
+	if cmd == nil {
+		t.Fatal("expected command, got nil")
+	}
+	if cmd.Name != "model" {
+		t.Fatalf("expected 'model', got %q", cmd.Name)
+	}
+	if len(cmd.Args) != 1 || cmd.Args[0] != "gpt-4o" {
+		t.Fatalf("expected args ['gpt-4o'], got %v", cmd.Args)
+	}
+}
+
+func TestParseCommand_NotACommand(t *testing.T) {
+	cmd := ParseCommand("hello world")
+	if cmd != nil {
+		t.Fatalf("expected nil for non-command, got %+v", cmd)
+	}
+}
+
+func TestParseCommand_EmptyString(t *testing.T) {
+	cmd := ParseCommand("")
+	if cmd != nil {
+		t.Fatalf("expected nil for empty string, got %+v", cmd)
+	}
+}
+
+func TestParseCommand_CaseInsensitive(t *testing.T) {
+	cmd := ParseCommand("/HELP")
+	if cmd == nil {
+		t.Fatal("expected command, got nil")
+	}
+	if cmd.Name != "help" {
+		t.Fatalf("expected 'help', got %q", cmd.Name)
+	}
+}
+
+func TestParseCommand_LeadingWhitespace(t *testing.T) {
+	cmd := ParseCommand("   /status")
+	if cmd == nil {
+		t.Fatal("expected command, got nil")
+	}
+	if cmd.Name != "status" {
+		t.Fatalf("expected 'status', got %q", cmd.Name)
+	}
+}
+
+func TestParseCommand_MultipleArgs(t *testing.T) {
+	cmd := ParseCommand("/search hello world foo")
+	if cmd == nil {
+		t.Fatal("expected command, got nil")
+	}
+	if cmd.Name != "search" {
+		t.Fatalf("expected 'search', got %q", cmd.Name)
+	}
+	if len(cmd.Args) != 3 {
+		t.Fatalf("expected 3 args, got %d", len(cmd.Args))
+	}
+}
+
+func TestParseCommand_SlashOnly(t *testing.T) {
+	cmd := ParseCommand("/")
+	if cmd != nil {
+		// "/" alone with no name should parse to empty name
+		if cmd.Name != "" {
+			t.Fatalf("expected empty name, got %q", cmd.Name)
+		}
+	}
+}

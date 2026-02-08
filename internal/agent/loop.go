@@ -27,16 +27,20 @@ const (
 
 // Loop is the core agent engine: receive message → call LLM → execute tools → respond.
 type Loop struct {
-	provider      domain.Provider
-	sessions      *SessionManager
-	prompt        *PromptBuilder
-	tools         *tool.Registry
-	security      *security.Engine
-	bus           domain.MessageBus
-	logger        *slog.Logger
-	maxIterations int
-	concurrency   int
-	rateLimiter   *RateLimiter
+	provider             domain.Provider
+	sessions             *SessionManager
+	prompt               *PromptBuilder
+	tools                *tool.Registry
+	security             *security.Engine
+	bus                  domain.MessageBus
+	logger               *slog.Logger
+	maxIterations        int
+	concurrency          int
+	maxTokensPerSession  int // 0 = disabled
+	tokenBudgetAlert     int // 0 = disabled
+	rateLimiter          *RateLimiter
+	compactor            *Compactor
+	toolFilter           *ToolFilter
 
 	// providers is the provider factory for per-message provider switching
 	providers ProviderResolver
@@ -49,16 +53,21 @@ type ProviderResolver interface {
 
 // LoopConfig holds all dependencies and tuning parameters for the agent loop.
 type LoopConfig struct {
-	Provider      domain.Provider
-	Providers     ProviderResolver // optional: for per-message provider switching
-	Sessions      *SessionManager
-	Prompt        *PromptBuilder
-	Tools         *tool.Registry
-	Security      *security.Engine
-	Bus           domain.MessageBus
-	Logger        *slog.Logger
-	MaxIterations int
-	Concurrency   int // max parallel messages (default 3)
+	Provider             domain.Provider
+	Providers            ProviderResolver // optional: for per-message provider switching
+	Sessions             *SessionManager
+	Prompt               *PromptBuilder
+	Tools                *tool.Registry
+	Security             *security.Engine
+	Bus                  domain.MessageBus
+	Logger               *slog.Logger
+	MaxIterations        int
+	Concurrency          int // max parallel messages (default 3)
+	MaxContextTokens     int // token budget for context compaction (default 4096)
+	MaxTokensPerSession  int // 0 = disabled; per-conversation token cap (R5)
+	TokenBudgetAlert     int // 0 = disabled; log warning when session reaches this (R5)
+	AllowedTools         []string // optional: whitelist of allowed tool names
+	DeniedTools          []string // optional: blacklist of denied tool names
 }
 
 // NewLoop creates a new agent loop with the given configuration.
@@ -69,19 +78,37 @@ func NewLoop(cfg LoopConfig) *Loop {
 	if cfg.Concurrency <= 0 {
 		cfg.Concurrency = defaultConcurrency
 	}
-	return &Loop{
-		provider:      cfg.Provider,
-		providers:     cfg.Providers,
-		sessions:      cfg.Sessions,
-		prompt:        cfg.Prompt,
-		tools:         cfg.Tools,
-		security:      cfg.Security,
-		bus:           cfg.Bus,
-		logger:        cfg.Logger,
-		maxIterations: cfg.MaxIterations,
-		concurrency:   cfg.Concurrency,
-		rateLimiter:   NewRateLimiter(defaultRateBurst, defaultRatePerMinute),
+	loop := &Loop{
+		provider:            cfg.Provider,
+		providers:           cfg.Providers,
+		sessions:            cfg.Sessions,
+		prompt:              cfg.Prompt,
+		tools:               cfg.Tools,
+		security:            cfg.Security,
+		bus:                 cfg.Bus,
+		logger:              cfg.Logger,
+		maxIterations:       cfg.MaxIterations,
+		concurrency:         cfg.Concurrency,
+		maxTokensPerSession: cfg.MaxTokensPerSession,
+		tokenBudgetAlert:    cfg.TokenBudgetAlert,
+		rateLimiter:         NewRateLimiter(defaultRateBurst, defaultRatePerMinute),
 	}
+
+	// Initialize context compactor if a provider is available.
+	if cfg.Provider != nil {
+		loop.compactor = NewCompactor(CompactorConfig{
+			Provider:  cfg.Provider,
+			MaxTokens: cfg.MaxContextTokens,
+			Logger:    cfg.Logger,
+		})
+	}
+
+	// Initialize tool filter if allow/deny lists are provided.
+	if len(cfg.AllowedTools) > 0 || len(cfg.DeniedTools) > 0 {
+		loop.toolFilter = NewToolFilter(cfg.AllowedTools, cfg.DeniedTools)
+	}
+
+	return loop
 }
 
 // Run consumes inbound messages and processes them with bounded concurrency.
@@ -113,13 +140,23 @@ func (l *Loop) Run(ctx context.Context) {
 // ProcessDirect processes a message synchronously and returns the response.
 // Used by CLI and other direct callers that need a blocking reply.
 func (l *Loop) ProcessDirect(ctx context.Context, content, channel, chatID string) (string, error) {
-	return l.handleMessage(ctx, domain.InboundMessage{
+	msg := domain.InboundMessage{
 		Channel:   channel,
 		ChatID:    chatID,
 		SenderID:  "user",
 		Content:   content,
 		Timestamp: time.Now(),
-	})
+	}
+
+	// Check for chat commands before sending to LLM.
+	if cmd := ParseCommand(content); cmd != nil {
+		result := l.HandleCommand(cmd, msg)
+		if result.Handled {
+			return result.Response, nil
+		}
+	}
+
+	return l.handleMessage(ctx, msg)
 }
 
 // processMessage handles a single inbound message and sends the response
@@ -130,6 +167,21 @@ func (l *Loop) processMessage(ctx context.Context, msg domain.InboundMessage) {
 		"sender", msg.SenderID,
 		"content_len", len(msg.Content),
 	)
+
+	// Check for chat commands (e.g. /help, /new, /status) before sending to LLM.
+	if cmd := ParseCommand(msg.Content); cmd != nil {
+		result := l.HandleCommand(cmd, msg)
+		if result.Handled {
+			l.bus.SendOutbound(domain.OutboundMessage{
+				Channel: msg.Channel,
+				ChatID:  msg.ChatID,
+				Content: result.Response,
+				Format:  "markdown",
+			})
+			return
+		}
+		// Not handled — continue to LLM processing
+	}
 
 	// Send thinking event to signal the frontend.
 	l.bus.SendOutbound(domain.OutboundMessage{
@@ -174,20 +226,43 @@ func (l *Loop) handleMessage(ctx context.Context, msg domain.InboundMessage) (st
 		return "", fmt.Errorf("session error: %w", err)
 	}
 
+	// R5: per-session token limit (in-memory; resets on restart)
+	if l.maxTokensPerSession > 0 {
+		if total := l.sessions.GetTokenUsage(convID); total >= int64(l.maxTokensPerSession) {
+			l.logger.Warn("token limit reached for conversation", "convID", convID, "limit", l.maxTokensPerSession)
+			return "Token limit for this conversation has been reached. Start a new conversation to continue.", nil
+		}
+	}
+
 	history, err := l.sessions.GetHistory(ctx, convID, defaultHistoryLimit)
 	if err != nil {
 		l.logger.Warn("failed to load history, continuing without it", "error", err)
 		history = nil
 	}
 
-	messages, err := l.prompt.BuildMessages(ctx, convID, history, msg.Content, msg.Channel, msg.ChatID)
+	// AR-3: inject uploaded file content into user message for context
+	userContent := msg.Content
+	if msg.AttachmentContent != "" {
+		userContent = "[Attached files]:\n" + msg.AttachmentContent + "\n\n" + userContent
+	}
+
+	messages, err := l.prompt.BuildMessages(ctx, convID, history, userContent, msg.Channel, msg.ChatID)
 	if err != nil {
 		return "", fmt.Errorf("build messages: %w", err)
+	}
+
+	// Apply context compaction to prevent token overflow.
+	if l.compactor != nil {
+		messages = l.compactor.Compact(ctx, messages)
 	}
 
 	var toolDefs []domain.ToolDefinition
 	if l.tools != nil {
 		toolDefs = l.tools.GetDefinitions()
+		// Apply tool filter to restrict which tools the LLM sees.
+		if l.toolFilter != nil {
+			toolDefs = l.toolFilter.FilterDefinitions(toolDefs)
+		}
 	}
 
 	// Helper: send a streaming event to the frontend.
@@ -265,6 +340,27 @@ func (l *Loop) handleMessage(ctx context.Context, msg domain.InboundMessage) (st
 			resp.LatencyMs = time.Since(startTime).Milliseconds()
 		}
 
+		// R5: record token usage and optionally alert
+		if resp.Usage.TotalTokens > 0 || resp.Usage.PromptTokens+resp.Usage.CompletionTokens > 0 {
+			totalTokens := resp.Usage.TotalTokens
+			if totalTokens == 0 {
+				totalTokens = resp.Usage.PromptTokens + resp.Usage.CompletionTokens
+			}
+			l.sessions.AddTokenUsage(convID, totalTokens)
+			if l.tokenBudgetAlert > 0 {
+				if l.sessions.GetTokenUsage(convID) >= int64(l.tokenBudgetAlert) {
+					l.logger.Warn("token budget alert: session reached threshold", "convID", convID, "threshold", l.tokenBudgetAlert, "total", l.sessions.GetTokenUsage(convID))
+				}
+			}
+		}
+
+		// R5: hard limit — stop if we exceeded after this completion
+		if l.maxTokensPerSession > 0 && l.sessions.GetTokenUsage(convID) >= int64(l.maxTokensPerSession) {
+			l.logger.Warn("token limit reached for conversation", "convID", convID, "limit", l.maxTokensPerSession)
+			finalContent = "Token limit for this conversation has been reached. Start a new conversation to continue."
+			break
+		}
+
 		// Fallback: some smaller models embed tool calls as JSON in the content field.
 		if !resp.HasToolCalls() && resp.Content != "" {
 			if extracted := extractToolCallsFromContent(resp.Content); len(extracted) > 0 {
@@ -336,7 +432,7 @@ func (l *Loop) handleMessage(ctx context.Context, msg domain.InboundMessage) (st
 	}
 
 	// Persist conversation history.
-	if err := l.sessions.SaveMessage(ctx, convID, domain.Message{Role: "user", Content: msg.Content}); err != nil {
+	if err := l.sessions.SaveMessage(ctx, convID, domain.Message{Role: "user", Content: userContent}); err != nil {
 		l.logger.Warn("failed to save user message", "error", err, "convID", convID)
 	}
 	if err := l.sessions.SaveMessage(ctx, convID, domain.Message{Role: "assistant", Content: finalContent}); err != nil {
@@ -354,6 +450,11 @@ func (l *Loop) handleMessage(ctx context.Context, msg domain.InboundMessage) (st
 // executeTool runs a single tool call with security checks.
 func (l *Loop) executeTool(ctx context.Context, tc domain.ToolCall) (string, error) {
 	l.logger.Info("executing tool", "tool", tc.Name)
+
+	// Tool filter check: ensure the tool is allowed.
+	if l.toolFilter != nil && !l.toolFilter.IsAllowed(tc.Name) {
+		return fmt.Sprintf("Tool %q is not allowed by the current agent profile.", tc.Name), nil
+	}
 
 	// Determine the security-relevant command string to evaluate.
 	command := extractSecurityCommand(tc)

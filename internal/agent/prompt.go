@@ -21,9 +21,11 @@ type cachedPrompt struct {
 }
 
 type PromptBuilder struct {
-	workspace string
-	memory    domain.MemoryStore
-	logger    *slog.Logger
+	workspace         string
+	memory            domain.MemoryStore
+	logger            *slog.Logger
+	thinkingLevel     string // "concise" | "normal" | "detailed"
+	systemPromptExtra string // custom text appended to system prompt
 
 	// Prompt cache keyed by channel:chatID
 	promptCache sync.Map
@@ -33,13 +35,38 @@ type PromptBuilder struct {
 	toolDefs     []domain.ToolDefinition
 }
 
+// PromptConfig holds configuration for the prompt builder.
+type PromptConfig struct {
+	Workspace         string
+	ThinkingLevel     string
+	SystemPromptExtra string
+}
+
 func NewPromptBuilder(workspace string, memory domain.MemoryStore, logger *slog.Logger) *PromptBuilder {
 	pb := &PromptBuilder{
-		workspace: workspace,
-		memory:    memory,
-		logger:    logger,
+		workspace:     workspace,
+		memory:        memory,
+		logger:        logger,
+		thinkingLevel: "normal",
 	}
 	// Periodic cleanup of expired prompt cache entries to prevent unbounded growth.
+	go pb.cleanupLoop()
+	return pb
+}
+
+// NewPromptBuilderWithConfig creates a PromptBuilder with additional configuration.
+func NewPromptBuilderWithConfig(cfg PromptConfig, memory domain.MemoryStore, logger *slog.Logger) *PromptBuilder {
+	level := cfg.ThinkingLevel
+	if level == "" {
+		level = "normal"
+	}
+	pb := &PromptBuilder{
+		workspace:         cfg.Workspace,
+		memory:            memory,
+		logger:            logger,
+		thinkingLevel:     level,
+		systemPromptExtra: cfg.SystemPromptExtra,
+	}
 	go pb.cleanupLoop()
 	return pb
 }
@@ -140,6 +167,23 @@ Channel: %s | Chat ID: %s
 6. Respond in the same language the user writes in.
 7. Be helpful, accurate, and concise.`,
 		now, osArch, runtime.GOOS, goVersion, workspacePath, osHint, channel, chatID)
+
+	// Add thinking level directive
+	thinkingDirective := ""
+	switch p.thinkingLevel {
+	case "concise":
+		thinkingDirective = "\n\n## Thinking Level: Concise\nKeep responses short and direct. Minimize explanations. One-line answers when possible."
+	case "detailed":
+		thinkingDirective = "\n\n## Thinking Level: Detailed\nProvide thorough, step-by-step explanations. Show reasoning. Include context and alternatives."
+	default: // "normal"
+		thinkingDirective = "\n\n## Thinking Level: Normal\nBalance clarity with brevity. Explain when helpful, be concise when straightforward."
+	}
+	identity += thinkingDirective
+
+	// Add custom system prompt extension
+	if p.systemPromptExtra != "" {
+		identity += "\n\n## Custom Instructions\n" + p.systemPromptExtra
+	}
 
 	memories, err := p.memory.GetRecentMemories(ctx, 5)
 	if err != nil {

@@ -10,16 +10,36 @@ import (
 )
 
 type SessionManager struct {
-	store  domain.MemoryStore
-	logger *slog.Logger
-	mu     sync.RWMutex
+	store       domain.MemoryStore
+	logger      *slog.Logger
+	mu          sync.RWMutex
+	tokenUsage  map[string]int64 // convID -> total tokens this session (in-memory, resets on restart)
+	tokenUsageMu sync.RWMutex
 }
 
 func NewSessionManager(store domain.MemoryStore, logger *slog.Logger) *SessionManager {
 	return &SessionManager{
-		store:  store,
-		logger: logger,
+		store:      store,
+		logger:     logger,
+		tokenUsage: make(map[string]int64),
 	}
+}
+
+// AddTokenUsage adds tokens used in a completion to the conversation total (R5: session token tracking).
+func (sm *SessionManager) AddTokenUsage(convID string, tokens int) {
+	if tokens <= 0 {
+		return
+	}
+	sm.tokenUsageMu.Lock()
+	sm.tokenUsage[convID] += int64(tokens)
+	sm.tokenUsageMu.Unlock()
+}
+
+// GetTokenUsage returns the total tokens used so far for this conversation (in-memory only).
+func (sm *SessionManager) GetTokenUsage(convID string) int64 {
+	sm.tokenUsageMu.RLock()
+	defer sm.tokenUsageMu.RUnlock()
+	return sm.tokenUsage[convID]
 }
 
 func (sm *SessionManager) GetOrCreateConversation(ctx context.Context, sessionKey, provider, model string) (string, error) {
@@ -124,6 +144,19 @@ func generateTitle(msg string) string {
 		msg = msg[:cut] + "..."
 	}
 	return msg
+}
+
+// ClearSession deletes a conversation and its messages, effectively starting fresh.
+func (sm *SessionManager) ClearSession(sessionKey string) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	ctx := context.Background()
+	if err := sm.store.DeleteConversation(ctx, sessionKey); err != nil {
+		sm.logger.Warn("failed to clear session", "session", sessionKey, "err", err)
+	} else {
+		sm.logger.Info("session cleared", "session", sessionKey)
+	}
 }
 
 func (sm *SessionManager) SaveMessage(ctx context.Context, convID string, msg domain.Message) error {
