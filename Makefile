@@ -1,4 +1,4 @@
-.PHONY: build run test clean install dev lint tidy vendor-assets
+.PHONY: build run test clean install dev lint tidy vendor-assets e2e
 
 # Variables
 BINARY_NAME=openbot
