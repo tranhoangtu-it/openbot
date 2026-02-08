@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"syscall"
 	"time"
@@ -17,6 +19,7 @@ import (
 	"openbot/internal/config"
 	"openbot/internal/domain"
 	"openbot/internal/memory"
+	"openbot/internal/mcp"
 	"openbot/internal/provider"
 	"openbot/internal/security"
 	"openbot/internal/tool"
@@ -30,6 +33,54 @@ var (
 	configPath string // overridable via --config flag
 )
 
+// setupLogger creates a logger that writes to stderr and optionally to a log file.
+// Returns a cleanup function that should be deferred.
+func setupLogger(level slog.Level, logFile string) func() {
+	var writers []io.Writer
+	writers = append(writers, os.Stderr)
+
+	var fileHandle *os.File
+	if logFile != "" {
+		dir := filepath.Dir(logFile)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			fmt.Fprintf(os.Stderr, "WARN: cannot create log directory %s: %v\n", dir, err)
+		} else {
+			f, err := os.OpenFile(logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "WARN: cannot open log file %s: %v\n", logFile, err)
+			} else {
+				fileHandle = f
+				writers = append(writers, f)
+			}
+		}
+	}
+
+	w := io.MultiWriter(writers...)
+	baseHandler := slog.NewTextHandler(w, &slog.HandlerOptions{Level: level})
+	// Wrap with redacting handler to prevent sensitive data from leaking into logs.
+	logger = slog.New(config.NewRedactingHandler(baseHandler))
+
+	return func() {
+		if fileHandle != nil {
+			fileHandle.Close()
+		}
+	}
+}
+
+// parseLogLevel converts a string log level to slog.Level.
+func parseLogLevel(level string) slog.Level {
+	switch level {
+	case "debug":
+		return slog.LevelDebug
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}
+
 func main() {
 	logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
@@ -41,12 +92,21 @@ func main() {
 
 	root.PersistentFlags().StringVarP(&configPath, "config", "c", "", "path to config.json (default: ~/.openbot/config.json)")
 
+	// Pass version to agent commands system
+	agent.SetVersion(version)
+
 	root.AddCommand(initCmd())
 	root.AddCommand(chatCmd())
 	root.AddCommand(gatewayCmd())
 	root.AddCommand(loginCmd())
 	root.AddCommand(statusCmd())
 	root.AddCommand(configCmd())
+	root.AddCommand(backupCmd())
+	root.AddCommand(restoreCmd())
+	root.AddCommand(doctorCmd())
+	root.AddCommand(wizardCmd())
+	root.AddCommand(installDaemonCmd())
+	root.AddCommand(uninstallDaemonCmd())
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
@@ -101,6 +161,10 @@ func runChat(cmd *cobra.Command, args []string) error {
 		cfg = config.Defaults()
 	}
 
+	// Re-initialize logger with config-driven level and optional file output.
+	cleanup := setupLogger(parseLogLevel(cfg.General.LogLevel), cfg.General.LogFile)
+	defer cleanup()
+
 	if err := os.MkdirAll(cfg.General.Workspace, 0o755); err != nil {
 		return err
 	}
@@ -132,26 +196,32 @@ func runChat(cmd *cobra.Command, args []string) error {
 	}
 
 	sessions := agent.NewSessionManager(memStore, logger)
-	promptBuilder := agent.NewPromptBuilder(cfg.General.Workspace, memStore, logger)
+	promptBuilder := agent.NewPromptBuilderWithConfig(agent.PromptConfig{
+		Workspace:         cfg.General.Workspace,
+		ThinkingLevel:     cfg.General.ThinkingLevel,
+		SystemPromptExtra: cfg.General.SystemPromptExtra,
+	}, memStore, logger)
 
 	provFactory := provider.NewFactory(cfg, logger)
-	prov, err := provFactory.DefaultProvider()
-	if err != nil || prov == nil {
-		logger.Warn("no default provider, trying ollama")
-		prov = provider.NewOllama(provider.OllamaConfig{Logger: logger})
+	prov := resolveProviderWithFailover(ctx, cfg, provFactory, logger)
+
+	toolReg, cronSched, mcpClient := registerTools(ctx, cfg, messageBus)
+	if mcpClient != nil {
+		defer mcpClient.Close()
 	}
 
-	toolReg, cronSched := registerTools(cfg, messageBus)
-
 	agentLoop := agent.NewLoop(agent.LoopConfig{
-		Provider:      prov,
-		Sessions:      sessions,
-		Prompt:        promptBuilder,
-		Tools:         toolReg,
-		Security:      secEngine,
-		Bus:           messageBus,
-		Logger:        logger,
-		MaxIterations: cfg.General.MaxIterations,
+		Provider:            prov,
+		Sessions:            sessions,
+		Prompt:              promptBuilder,
+		Tools:               toolReg,
+		Security:            secEngine,
+		Bus:                 messageBus,
+		Logger:              logger,
+		MaxIterations:       cfg.General.MaxIterations,
+		MaxContextTokens:    cfg.General.MaxContextTokens,
+		MaxTokensPerSession: cfg.General.MaxTokensPerSession,
+		TokenBudgetAlert:   cfg.General.TokenBudgetAlert,
 	})
 
 	go agentLoop.Run(ctx)
@@ -164,9 +234,50 @@ func runChat(cmd *cobra.Command, args []string) error {
 	return cliCh.Start(ctx, messageBus)
 }
 
+// resolveProviderWithFailover builds a provider from config, optionally wrapping
+// multiple providers in a failover chain based on general.failoverChain config.
+func resolveProviderWithFailover(ctx context.Context, cfg *config.Config, factory *provider.Factory, log *slog.Logger) domain.Provider {
+	// If a failover chain is configured, build a failover provider.
+	if len(cfg.General.FailoverChain) > 0 {
+		var providers []domain.Provider
+		for _, name := range cfg.General.FailoverChain {
+			p, err := factory.Get(name)
+			if err != nil {
+				log.Warn("failover chain: skipping provider", "name", name, "err", err)
+				continue
+			}
+			providers = append(providers, p)
+		}
+		if len(providers) > 0 {
+			fp := provider.NewFailoverProvider(providers, log)
+			if err := fp.Healthy(ctx); err != nil {
+				log.Warn("failover chain unhealthy at startup", "err", err)
+			} else {
+				log.Info("failover chain healthy", "chain", fp.Name())
+			}
+			return fp
+		}
+		log.Warn("failover chain configured but no valid providers found, using default")
+	}
+
+	// Single provider mode.
+	prov, err := factory.DefaultProvider()
+	if err != nil || prov == nil {
+		log.Warn("no default provider, falling back to ollama")
+		prov = provider.NewOllama(provider.OllamaConfig{Logger: log})
+	}
+	if err := prov.Healthy(ctx); err != nil {
+		log.Warn("default provider unhealthy at startup", "provider", prov.Name(), "err", err)
+	} else {
+		log.Info("provider healthy", "provider", prov.Name())
+	}
+	return prov
+}
+
 // registerTools creates and registers all tools with the registry.
-// Returns the registry and an optional CronScheduler (caller must start it).
-func registerTools(cfg *config.Config, messageBus domain.MessageBus) (*tool.Registry, *tool.CronScheduler) {
+// If MCP is enabled, connects to configured MCP servers and registers their tools (prefix mcp_<server>_<name>).
+// Returns the registry, an optional CronScheduler (caller must start it), and an optional MCP client (caller must call Close on shutdown).
+func registerTools(ctx context.Context, cfg *config.Config, messageBus domain.MessageBus) (*tool.Registry, *tool.CronScheduler, *mcp.Client) {
 	toolReg := tool.NewRegistry(logger)
 	toolReg.Register(tool.NewShellTool(tool.ShellConfig{
 		WorkingDir:          cfg.General.Workspace,
@@ -189,7 +300,32 @@ func registerTools(cfg *config.Config, messageBus domain.MessageBus) (*tool.Regi
 		toolReg.Register(tool.NewCronTool(cronSched))
 	}
 
-	return toolReg, cronSched
+	var mcpClient *mcp.Client
+	if cfg.MCP.Enabled && len(cfg.MCP.Servers) > 0 {
+		mcpClient = mcp.NewClient(logger)
+		for _, s := range cfg.MCP.Servers {
+			sc := mcp.ServerConfig{
+				Name:      s.Name,
+				Transport: mcp.Transport(s.Transport),
+				Command:   s.Command,
+				Args:      s.Args,
+				URL:       s.URL,
+				Env:       s.Env,
+			}
+			if err := mcpClient.Connect(ctx, sc); err != nil {
+				logger.Warn("MCP server connect failed", "server", s.Name, "err", err)
+				continue
+			}
+		}
+		for _, def := range mcpClient.ListTools() {
+			toolReg.Register(mcp.NewToolAdapter(mcpClient, def))
+		}
+		if mcpClient.HasServers() {
+			logger.Info("MCP tools registered", "servers", mcpClient.ServerNames(), "count", len(mcpClient.ListTools()))
+		}
+	}
+
+	return toolReg, cronSched, mcpClient
 }
 
 func loginCmd() *cobra.Command {
@@ -345,6 +481,10 @@ func runGateway(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
+	// Re-initialize logger with config-driven level and optional file output.
+	cleanup := setupLogger(parseLogLevel(cfg.General.LogLevel), cfg.General.LogFile)
+	defer cleanup()
+
 	// Ensure workspace exists
 	if err := os.MkdirAll(cfg.General.Workspace, 0o755); err != nil {
 		return err
@@ -364,16 +504,7 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	defer memStore.Close()
 
 	provFactory := provider.NewFactory(cfg, logger)
-	prov, err := provFactory.DefaultProvider()
-	if err != nil || prov == nil {
-		logger.Warn("no default provider, falling back to ollama")
-		prov = provider.NewOllama(provider.OllamaConfig{Logger: logger})
-	}
-	if err := prov.Healthy(ctx); err != nil {
-		logger.Warn("default provider unhealthy at startup", "provider", prov.Name(), "err", err)
-	} else {
-		logger.Info("provider healthy", "provider", prov.Name())
-	}
+	prov := resolveProviderWithFailover(ctx, cfg, provFactory, logger)
 
 	var telegramCh *channel.Telegram
 	confirmFn := func(ctx2 context.Context, question string) (bool, error) {
@@ -394,19 +525,30 @@ func runGateway(cmd *cobra.Command, args []string) error {
 	}
 
 	sessions := agent.NewSessionManager(memStore, logger)
-	promptBuilder := agent.NewPromptBuilder(cfg.General.Workspace, memStore, logger)
+	promptBuilder := agent.NewPromptBuilderWithConfig(agent.PromptConfig{
+		Workspace:         cfg.General.Workspace,
+		ThinkingLevel:     cfg.General.ThinkingLevel,
+		SystemPromptExtra: cfg.General.SystemPromptExtra,
+	}, memStore, logger)
 
-	toolReg, cronSched := registerTools(cfg, messageBus)
+	toolReg, cronSched, mcpClient := registerTools(ctx, cfg, messageBus)
+	if mcpClient != nil {
+		defer mcpClient.Close()
+	}
 
 	agentLoop := agent.NewLoop(agent.LoopConfig{
-		Provider:      prov,
-		Sessions:      sessions,
-		Prompt:        promptBuilder,
-		Tools:         toolReg,
-		Security:      secEngine,
-		Bus:           messageBus,
-		Logger:        logger,
-		MaxIterations: cfg.General.MaxIterations,
+		Provider:            prov,
+		Providers:          provFactory,
+		Sessions:           sessions,
+		Prompt:             promptBuilder,
+		Tools:              toolReg,
+		Security:           secEngine,
+		Bus:                messageBus,
+		Logger:             logger,
+		MaxIterations:      cfg.General.MaxIterations,
+		MaxContextTokens:   cfg.General.MaxContextTokens,
+		MaxTokensPerSession: cfg.General.MaxTokensPerSession,
+		TokenBudgetAlert:   cfg.General.TokenBudgetAlert,
 	})
 
 	go agentLoop.Run(ctx)
@@ -434,6 +576,17 @@ func runGateway(cmd *cobra.Command, args []string) error {
 
 	var webCh *channel.Web
 	if cfg.Channels.Web.Enabled {
+		attachPath := filepath.Join(cfg.General.Workspace, "attachments")
+		fileAttach, errAttach := tool.NewFileAttachTool(tool.FileAttachConfig{
+			StoragePath:  attachPath,
+			MaxSizeBytes: 10 * 1024 * 1024, // 10MB
+			DB:           memStore.WriterDB(),
+			Logger:       logger,
+		})
+		if errAttach != nil {
+			logger.Warn("file attachment disabled", "err", errAttach)
+			fileAttach = nil
+		}
 		webCh = channel.NewWeb(channel.WebConfig{
 			Host:       cfg.Channels.Web.Host,
 			Port:       cfg.Channels.Web.Port,
@@ -442,10 +595,56 @@ func runGateway(cmd *cobra.Command, args []string) error {
 			ConfigPath: cfgPath,
 			Version:    version,
 			Store:      memStore,
+			FileAttach: fileAttach,
 		})
 		go func() {
 			if err := webCh.Start(ctx, messageBus); err != nil {
 				logger.Error("web channel error", "err", err)
+			}
+		}()
+	}
+
+	// Start Discord channel if enabled
+	if cfg.Channels.Discord.Enabled && cfg.Channels.Discord.Token != "" {
+		discordCh := channel.NewDiscord(channel.DiscordConfig{
+			Token:   cfg.Channels.Discord.Token,
+			GuildID: cfg.Channels.Discord.GuildID,
+			Logger:  logger,
+		})
+		go func() {
+			if err := discordCh.Start(ctx, messageBus); err != nil {
+				logger.Error("discord channel error", "err", err)
+			}
+		}()
+	}
+
+	// Start Slack channel if enabled
+	if cfg.Channels.Slack.Enabled && cfg.Channels.Slack.BotToken != "" && cfg.Channels.Slack.AppToken != "" {
+		slackCh := channel.NewSlack(channel.SlackConfig{
+			BotToken: cfg.Channels.Slack.BotToken,
+			AppToken: cfg.Channels.Slack.AppToken,
+			Logger:   logger,
+		})
+		go func() {
+			if err := slackCh.Start(ctx, messageBus); err != nil {
+				logger.Error("slack channel error", "err", err)
+			}
+		}()
+	}
+
+	// Start API Gateway (OpenAI-compatible endpoint + health checks)
+	var apiGw *channel.APIGateway
+	if cfg.API.Enabled {
+		apiGw = channel.NewAPIGateway(channel.APIGatewayConfig{
+			Port:     cfg.API.Port,
+			APIKey:   cfg.API.APIKey,
+			Logger:   logger,
+			Provider: prov,
+			Version:  version,
+		})
+		go func() {
+			if err := apiGw.Start(ctx, messageBus); err != nil {
+				logger.Error("API gateway error", "err", err)
 			}
 		}()
 	}
@@ -471,6 +670,8 @@ func runGateway(cmd *cobra.Command, args []string) error {
 		if webCh != nil {
 			webCh.Stop()
 		}
+		// API Gateway shuts down via ctx.Done() in its Start goroutine.
+		_ = apiGw // referenced for clarity; shutdown is context-driven.
 		messageBus.Close()
 	}()
 
