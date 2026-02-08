@@ -81,7 +81,7 @@ func (t *ScreenTool) typeText(text string) (string, error) {
 	if text == "" {
 		return "Error: no text provided.", nil
 	}
-	return fmt.Sprintf("Type text '%s' — requires robotgo (CGO build). Stub only.", truncate(text, 50)), nil
+	return fmt.Sprintf("Type text %s — requires robotgo (CGO build). Stub only.", truncate(text, 50)), nil
 }
 
 func (t *ScreenTool) keyPress(key string) (string, error) {
