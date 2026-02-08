@@ -11,6 +11,7 @@ import (
 	"fmt"
 	htmltemplate "html/template"
 	"log/slog"
+	"mime"
 	"net/http"
 	"strings"
 	"sync"
@@ -19,14 +20,16 @@ import (
 	"openbot/internal/config"
 	"openbot/internal/domain"
 	"openbot/internal/metrics"
+	"openbot/internal/tool"
 )
 
 const (
-	maxFormSize       = 1 << 20 // 1MB
-	maxBodySize       = 1 << 20
-	requestTimeout    = 120 * time.Second
-	sessionCookieName = "openbot_session"
-	sessionMaxAge     = 86400 * 30 // 30 days
+	maxFormSize           = 1 << 20  // 1MB for non-upload forms
+	maxMultipartFormSize  = 10 << 20 // 10MB for /chat/send with file attachments
+	maxBodySize           = 1 << 20
+	requestTimeout        = 120 * time.Second
+	sessionCookieName     = "openbot_session"
+	sessionMaxAge         = 86400 * 30 // 30 days
 )
 
 //go:embed web_templates/*.html
@@ -63,6 +66,9 @@ type Web struct {
 	// Pending responses keyed by session ID
 	pendingResponses   map[string]chan string
 	pendingResponsesMu sync.Mutex
+
+	// Optional: file attachment storage for uploads (AR-3)
+	fileAttach *tool.FileAttachTool
 }
 
 // sseEvent is a structured SSE event sent to the browser.
@@ -80,7 +86,8 @@ type WebConfig struct {
 	Config     *config.Config
 	ConfigPath string
 	Version    string
-	Store      domain.MemoryStore // optional: for conversations API
+	Store      domain.MemoryStore    // optional: for conversations API
+	FileAttach *tool.FileAttachTool  // optional: for file uploads (AR-3)
 }
 
 func NewWeb(cfg WebConfig) *Web {
@@ -105,6 +112,7 @@ func NewWeb(cfg WebConfig) *Web {
 		cfg:              cfg.Config,
 		cfgPath:          cfg.ConfigPath,
 		store:            cfg.Store,
+		fileAttach:       cfg.FileAttach,
 		sseClients:       make(map[string]chan sseEvent),
 		pendingResponses: make(map[string]chan string),
 	}
@@ -121,9 +129,14 @@ func NewWeb(cfg WebConfig) *Web {
 
 func (w *Web) Name() string { return "web" }
 
+// SetBus sets the message bus (used by Start; exposed for tests).
+func (w *Web) SetBus(bus domain.MessageBus) {
+	w.bus = bus
+}
+
 // Start starts the web server.
 func (w *Web) Start(ctx context.Context, bus domain.MessageBus) error {
-	w.bus = bus
+	w.SetBus(bus)
 
 	// Register outbound handler — routes responses back to the correct session
 	bus.OnOutbound("web", func(msg domain.OutboundMessage) {
@@ -165,6 +178,35 @@ func (w *Web) Start(ctx context.Context, bus domain.MessageBus) error {
 		w.sendSSEEvent(msg.ChatID, sseEvent{Type: "message", Content: msg.Content})
 	})
 
+	mux := w.buildMux()
+
+	addr := fmt.Sprintf("%s:%d", w.host, w.port)
+	w.server = &http.Server{
+		Addr:              addr,
+		Handler:           securityHeaders(mux),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20, // 1MB
+	}
+
+	w.logger.Info("web UI started", "addr", "http://"+addr, "auth", w.authEnabled)
+
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		w.server.Shutdown(shutdownCtx)
+	}()
+
+	if err := w.server.ListenAndServe(); err != http.ErrServerClosed {
+		return err
+	}
+	return nil
+}
+
+// buildMux builds the HTTP mux for the Web UI (used by Start and by Handler for tests).
+func (w *Web) buildMux() *http.ServeMux {
 	mux := http.NewServeMux()
 
 	// Static assets (logo, JS, CSS) — served from embedded web_assets/
@@ -209,30 +251,13 @@ func (w *Web) Start(ctx context.Context, bus domain.MessageBus) error {
 	// Prometheus-compatible metrics endpoint
 	mux.HandleFunc("GET /metrics", metrics.Collector.Handler())
 
-	addr := fmt.Sprintf("%s:%d", w.host, w.port)
-	w.server = &http.Server{
-		Addr:              addr,
-		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		IdleTimeout:       120 * time.Second,
-		MaxHeaderBytes:    1 << 20, // 1MB
-		// WriteTimeout intentionally omitted: SSE requires long-lived writes.
-	}
+	return mux
+}
 
-	w.logger.Info("web UI started", "addr", "http://"+addr, "auth", w.authEnabled)
-
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		w.server.Shutdown(shutdownCtx)
-	}()
-
-	if err := w.server.ListenAndServe(); err != http.ErrServerClosed {
-		return err
-	}
-	return nil
+// Handler returns the HTTP handler (mux + security headers) for use in tests.
+// Call SetBus before Handler() so that handleSend and other handlers use the correct bus.
+func (w *Web) Handler() http.Handler {
+	return securityHeaders(w.buildMux())
 }
 
 // requireAuth wraps a handler with HTTP Basic Auth when auth is enabled.
@@ -250,6 +275,17 @@ func (w *Web) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(rw, r)
 	}
+}
+
+// securityHeaders wraps a handler to set security headers on every response.
+func securityHeaders(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("X-Frame-Options", "DENY")
+		rw.Header().Set("X-Content-Type-Options", "nosniff")
+		// CSP report-only: collect violations without blocking; tighten in Phase 1 once stable
+		rw.Header().Set("Content-Security-Policy-Report-Only", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'")
+		h.ServeHTTP(rw, r)
+	})
 }
 
 // checkCredentials verifies username and password against stored hash.
@@ -290,13 +326,8 @@ func (w *Web) getOrCreateSession(r *http.Request, rw http.ResponseWriter) string
 		sessionID := fmt.Sprintf("web_%d", time.Now().UnixNano())
 		w.logger.Warn("rand.Read failed, using fallback session ID", "err", err)
 		http.SetCookie(rw, &http.Cookie{
-			Name:     sessionCookieName,
-			Value:    sessionID,
-			Path:     "/",
-			MaxAge:   sessionMaxAge,
-			HttpOnly: true,
-			SameSite: http.SameSiteLaxMode,
-			Secure:   true,
+			Name: sessionCookieName, Value: sessionID, Path: "/",
+			MaxAge: sessionMaxAge, HttpOnly: true, SameSite: http.SameSiteLaxMode,
 		})
 		return sessionID
 	}
@@ -309,7 +340,6 @@ func (w *Web) getOrCreateSession(r *http.Request, rw http.ResponseWriter) string
 		MaxAge:   sessionMaxAge,
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   true,
 	})
 	w.logger.Info("new web session created", "session", sessionID)
 	return sessionID
@@ -317,8 +347,9 @@ func (w *Web) getOrCreateSession(r *http.Request, rw http.ResponseWriter) string
 
 func (w *Web) handleDashboard(rw http.ResponseWriter, r *http.Request) {
 	if err := w.tmpl.ExecuteTemplate(rw, "dashboard.html", map[string]any{
-		"Title": "OpenBot Dashboard",
-		"Time":  time.Now().Format("2006-01-02 15:04:05"),
+		"Title":       "OpenBot Dashboard",
+		"Description": "OpenBot dashboard — status, messages, conversations, and active sessions.",
+		"Time":        time.Now().Format("2006-01-02 15:04:05"),
 	}); err != nil {
 		w.logger.Error("template error", "template", "dashboard", "err", err)
 	}
@@ -327,14 +358,22 @@ func (w *Web) handleDashboard(rw http.ResponseWriter, r *http.Request) {
 func (w *Web) handleChat(rw http.ResponseWriter, r *http.Request) {
 	w.getOrCreateSession(r, rw)
 	if err := w.tmpl.ExecuteTemplate(rw, "chat.html", map[string]any{
-		"Title": "OpenBot Chat",
+		"Title":       "OpenBot Chat",
+		"Description": "Chat with OpenBot — self-hosted AI assistant with streaming and tools.",
 	}); err != nil {
 		w.logger.Error("template error", "template", "chat", "err", err)
 	}
 }
 
 func (w *Web) handleSend(rw http.ResponseWriter, r *http.Request) {
-	_ = r.ParseMultipartForm(maxFormSize)
+	sessionID := w.getOrCreateSession(r, rw)
+	// Allow larger body when file attachments may be present
+	if err := r.ParseMultipartForm(maxMultipartFormSize); err != nil {
+		rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+		rw.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(rw).Encode(map[string]string{"error": "failed to parse form: " + err.Error()})
+		return
+	}
 	message := r.FormValue("message")
 	if message == "" {
 		rw.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -343,20 +382,63 @@ func (w *Web) handleSend(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sessionID := w.getOrCreateSession(r, rw)
 	provider := r.FormValue("provider") // optional: per-message provider switch
 
+	// Process file attachments (AR-3): store and extract text for context
+	var attachmentContent string
+	if w.fileAttach != nil && r.MultipartForm != nil {
+		convID := "web:" + sessionID
+		for name, headers := range r.MultipartForm.File {
+			if name != "files" && name != "attachments" && !strings.HasPrefix(name, "file") {
+				continue
+			}
+			for _, hdr := range headers {
+				if hdr.Size == 0 {
+					continue
+				}
+				mimeType := hdr.Header.Get("Content-Type")
+				if mimeType == "" {
+					mimeType = mime.TypeByExtension(strings.TrimPrefix(strings.ToLower(hdr.Filename), "."))
+				}
+				if !tool.IsSupportedType(mimeType) {
+					w.logger.Warn("file attachment type not supported", "filename", hdr.Filename, "mime", mimeType)
+					continue
+				}
+				file, err := hdr.Open()
+				if err != nil {
+					w.logger.Warn("open uploaded file", "filename", hdr.Filename, "err", err)
+					continue
+				}
+				info, err := w.fileAttach.Store(r.Context(), convID, hdr.Filename, mimeType, file)
+				file.Close()
+				if err != nil {
+					w.logger.Warn("store attachment", "filename", hdr.Filename, "err", err)
+					continue
+				}
+				text, err := w.fileAttach.ReadText(info)
+				if err != nil {
+					w.logger.Warn("read attachment text", "filename", hdr.Filename, "err", err)
+					continue
+				}
+				if attachmentContent != "" {
+					attachmentContent += "\n\n---\n\n"
+				}
+				attachmentContent += fmt.Sprintf("[File: %s]\n%s", hdr.Filename, text)
+			}
+		}
+	}
+
 	// Check if the client wants to use streaming (via SSE) or blocking mode.
-	// If "stream=true" is set (or the SSE client is connected), return 202 immediately.
 	streamMode := r.FormValue("stream") == "true"
 
 	inbound := domain.InboundMessage{
-		Channel:   "web",
-		ChatID:    sessionID,
-		SenderID:  "web_user",
-		Content:   message,
-		Timestamp: time.Now(),
-		Provider:  provider,
+		Channel:           "web",
+		ChatID:            sessionID,
+		SenderID:          "web_user",
+		Content:           message,
+		AttachmentContent: attachmentContent,
+		Timestamp:         time.Now(),
+		Provider:          provider,
 	}
 
 	if streamMode {
@@ -413,7 +495,6 @@ func (w *Web) handleClear(rw http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		MaxAge:   -1,
 		HttpOnly: true,
-		Secure:   true,
 	})
 	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
 	json.NewEncoder(rw).Encode(map[string]string{"status": "session cleared"})
@@ -493,7 +574,7 @@ func (w *Web) handleCreateConversation(rw http.ResponseWriter, r *http.Request) 
 	sessionID := w.getOrCreateSession(r, rw)
 	// A new conversation is simply a new session cookie
 	http.SetCookie(rw, &http.Cookie{
-		Name: sessionCookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, Secure: true,
+		Name: sessionCookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true,
 	})
 	rw.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(rw).Encode(map[string]string{"status": "new_conversation", "old_session": sessionID})

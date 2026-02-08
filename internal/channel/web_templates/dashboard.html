@@ -4,8 +4,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{.Title}}</title>
+    <meta name="description" content="{{if .Description}}{{.Description}}{{else}}OpenBot dashboard — status and stats.{{end}}">
+    <meta property="og:title" content="{{.Title}}">
+    <meta property="og:description" content="{{if .Description}}{{.Description}}{{else}}OpenBot dashboard — status and stats.{{end}}">
     <script src="/assets/tailwind.js"></script>
     <script>tailwind.config={darkMode:'class'}</script>
+    <link rel="stylesheet" href="/assets/openbot-tokens.css">
     <script src="/assets/htmx.min.js"></script>
 </head>
 <body class="bg-gray-100 dark:bg-gray-900 min-h-screen">

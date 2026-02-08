@@ -19,11 +19,13 @@ const apiGatewayMaxBodySize = 1 << 20 // 1MB
 // APIGateway exposes an OpenAI-compatible /v1/chat/completions endpoint
 // that routes through the existing agent loop.
 type APIGateway struct {
-	port    int
-	apiKey  string
-	bus     domain.MessageBus
-	logger  *slog.Logger
-	server  *http.Server
+	port     int
+	apiKey   string
+	bus      domain.MessageBus
+	logger   *slog.Logger
+	server   *http.Server
+	provider domain.Provider // for health checks
+	version  string
 
 	// Pending responses keyed by request ID
 	pending   map[string]chan string
@@ -31,17 +33,21 @@ type APIGateway struct {
 }
 
 type APIGatewayConfig struct {
-	Port   int
-	APIKey string
-	Logger *slog.Logger
+	Port     int
+	APIKey   string
+	Logger   *slog.Logger
+	Provider domain.Provider // for health checks
+	Version  string
 }
 
 func NewAPIGateway(cfg APIGatewayConfig) *APIGateway {
 	return &APIGateway{
-		port:    cfg.Port,
-		apiKey:  cfg.APIKey,
-		logger:  cfg.Logger,
-		pending: make(map[string]chan string),
+		port:     cfg.Port,
+		apiKey:   cfg.APIKey,
+		logger:   cfg.Logger,
+		provider: cfg.Provider,
+		version:  cfg.Version,
+		pending:  make(map[string]chan string),
 	}
 }
 
@@ -74,6 +80,9 @@ func (g *APIGateway) Start(ctx context.Context, bus domain.MessageBus) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/chat/completions", g.handleChatCompletions)
 	mux.HandleFunc("GET /v1/models", g.handleModels)
+	mux.HandleFunc("GET /health", g.handleHealth)
+	mux.HandleFunc("GET /health/live", g.handleHealthLive)
+	mux.HandleFunc("GET /health/ready", g.handleHealthReady)
 
 	addr := fmt.Sprintf(":%d", g.port)
 	g.server = &http.Server{
@@ -219,6 +228,66 @@ func (g *APIGateway) handleModels(rw http.ResponseWriter, r *http.Request) {
 			{"id": "openbot", "object": "model", "owned_by": "openbot"},
 		},
 	})
+}
+
+// --- Health Check Endpoints ---
+
+// handleHealth returns a combined health status.
+func (g *APIGateway) handleHealth(rw http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	status := "ok"
+	httpCode := http.StatusOK
+	providerHealthy := true
+
+	if g.provider != nil {
+		if err := g.provider.Healthy(ctx); err != nil {
+			providerHealthy = false
+			status = "degraded"
+		}
+	}
+
+	resp := map[string]any{
+		"status":  status,
+		"version": g.version,
+		"checks": map[string]any{
+			"provider": providerHealthy,
+		},
+	}
+
+	rw.Header().Set("Content-Type", "application/json")
+	rw.WriteHeader(httpCode)
+	json.NewEncoder(rw).Encode(resp)
+}
+
+// handleHealthLive is a liveness probe — returns 200 if the process is running.
+func (g *APIGateway) handleHealthLive(rw http.ResponseWriter, r *http.Request) {
+	rw.Header().Set("Content-Type", "application/json")
+	rw.WriteHeader(http.StatusOK)
+	json.NewEncoder(rw).Encode(map[string]string{"status": "alive"})
+}
+
+// handleHealthReady is a readiness probe — returns 200 if the system can serve requests.
+func (g *APIGateway) handleHealthReady(rw http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	if g.provider != nil {
+		if err := g.provider.Healthy(ctx); err != nil {
+			rw.Header().Set("Content-Type", "application/json")
+			rw.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(rw).Encode(map[string]any{
+				"status": "not_ready",
+				"reason": err.Error(),
+			})
+			return
+		}
+	}
+
+	rw.Header().Set("Content-Type", "application/json")
+	rw.WriteHeader(http.StatusOK)
+	json.NewEncoder(rw).Encode(map[string]string{"status": "ready"})
 }
 
 // --- OpenAI-compatible request/response types ---

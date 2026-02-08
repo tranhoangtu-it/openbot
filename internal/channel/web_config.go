@@ -11,7 +11,8 @@ import (
 // handleSettings renders the settings page.
 func (w *Web) handleSettings(rw http.ResponseWriter, r *http.Request) {
 	if err := w.tmpl.ExecuteTemplate(rw, "settings.html", map[string]any{
-		"Title": "OpenBot Settings",
+		"Title":       "OpenBot Settings",
+		"Description": "OpenBot settings — configure providers, channels, security, and tools.",
 	}); err != nil {
 		w.logger.Error("template error", "template", "settings", "err", err)
 	}

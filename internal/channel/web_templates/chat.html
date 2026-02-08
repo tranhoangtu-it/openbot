@@ -4,8 +4,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{.Title}}</title>
+    <meta name="description" content="{{if .Description}}{{.Description}}{{else}}Chat with OpenBot — self-hosted AI assistant.{{end}}">
+    <meta property="og:title" content="{{.Title}}">
+    <meta property="og:description" content="{{if .Description}}{{.Description}}{{else}}Chat with OpenBot — self-hosted AI assistant.{{end}}">
     <script src="/assets/tailwind.js"></script>
     <script>tailwind.config={darkMode:'class'}</script>
+    <link rel="stylesheet" href="/assets/openbot-tokens.css">
     <script src="/assets/marked.min.js"></script>
     <link rel="stylesheet" href="/assets/github-dark.min.css">
     <script src="/assets/highlight.min.js"></script>
@@ -19,17 +23,17 @@
         .msg-bot { animation: fadeIn 0.3s ease-out; }
         @keyframes slideIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
         @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-        .prose pre { background: #1e293b; color: #e2e8f0; border-radius: 0.5rem; padding: 1rem; overflow-x: auto; }
-        .prose code { background: #f1f5f9; padding: 0.125rem 0.375rem; border-radius: 0.25rem; font-size: 0.875rem; }
-        .dark .prose code { background: #374151; color: #e5e7eb; }
+        .prose pre { background: var(--ob-code-bg-dark); color: var(--ob-code-text); border-radius: var(--ob-radius-md); padding: var(--ob-space-4); overflow-x: auto; }
+        .prose code { background: var(--ob-code-bg); padding: 0.125rem 0.375rem; border-radius: var(--ob-radius-sm); font-size: 0.875rem; }
+        .dark .prose code { background: var(--ob-code-inline-dark); color: var(--ob-code-inline-text); }
         .prose pre code { background: none; padding: 0; }
-        .tool-badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 9999px; font-size: 0.75rem; font-weight: 500; }
+        .tool-badge { display: inline-flex; align-items: center; gap: var(--ob-space-1); padding: 2px 8px; border-radius: var(--ob-radius-full); font-size: 0.75rem; font-weight: 500; }
         @keyframes spin { to { transform: rotate(360deg); } }
-        .tool-spinner { animation: spin 1s linear infinite; width: 12px; height: 12px; border: 2px solid #94a3b8; border-top-color: #3b82f6; border-radius: 50%; }
+        .tool-spinner { animation: spin 1s linear infinite; width: 12px; height: 12px; border: 2px solid var(--ob-spinner-border); border-top-color: var(--ob-spinner-top); border-radius: 50%; }
         textarea { transition: height 0.1s ease; }
         .sidebar-item { transition: background 0.15s; }
-        .sidebar-item:hover { background: rgba(59,130,246,0.08); }
-        .sidebar-item.active { background: rgba(59,130,246,0.12); border-right: 3px solid #3b82f6; }
+        .sidebar-item:hover { background: var(--ob-sidebar-hover); }
+        .sidebar-item.active { background: var(--ob-sidebar-active); border-right: 3px solid var(--ob-primary); }
         #sidebar { transition: transform 0.25s ease; }
         @media (max-width: 768px) {
             #sidebar { transform: translateX(-100%); position: fixed; z-index: 40; height: 100%; }
@@ -75,7 +79,7 @@
 
         <!-- Main Chat Area -->
         <main class="flex-1 flex flex-col overflow-hidden">
-            <div id="chat-messages" class="flex-1 overflow-y-auto p-4 space-y-3">
+            <div id="chat-messages" class="flex-1 overflow-y-auto p-4 space-y-3 min-h-[12rem]" style="contain: layout;">
                 <div id="welcome-msg" class="text-center text-gray-400 dark:text-gray-500 py-16">
                     <p class="text-2xl mb-2">&#x1F44B;</p>
                     <p class="text-lg mb-1 text-gray-600 dark:text-gray-300">Hello! I'm OpenBot.</p>
@@ -85,13 +89,17 @@
 
             <form id="chat-form" class="bg-white dark:bg-gray-800 border-t dark:border-gray-700 p-3" onsubmit="return handleSend(event)">
                 <div class="max-w-4xl mx-auto flex items-end space-x-3">
+                    <input type="file" id="file-input" name="files" multiple accept=".txt,.json,.csv,.md,.log,text/*,application/json,application/csv,application/pdf,image/jpeg,image/png,image/gif,image/webp" class="hidden" title="Attach files">
+                    <button type="button" id="attach-btn" class="p-2 rounded-lg text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-600 transition flex-shrink-0" title="Attach files" onclick="document.getElementById('file-input').click()">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/></svg>
+                    </button>
                     <textarea
                         name="message"
                         id="message-input"
                         rows="1"
                         placeholder="Type your message... (Shift+Enter for newline)"
                         class="flex-1 resize-none border dark:border-gray-600 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-700"
-                        style="max-height: 160px; min-height: 40px;"
+                        class="ob-input-chat"
                         oninput="autoResize(this)"
                         onkeydown="handleKeyDown(event)"
                     ></textarea>
@@ -101,6 +109,7 @@
                         class="bg-blue-600 text-white px-5 py-2 rounded-lg hover:bg-blue-700 transition font-medium disabled:opacity-50 disabled:cursor-not-allowed"
                     >Send</button>
                 </div>
+                <div id="file-list" class="max-w-4xl mx-auto mt-1 text-xs text-gray-500 dark:text-gray-400 hidden"></div>
             </form>
         </main>
     </div>
@@ -118,6 +127,7 @@
     let accumulatedContent = '';
     let activeTools = new Map();
     let eventSource = null;
+    let lastUserMessageForRetry = '';
 
     // --- Dark mode ---
     function initTheme() {
@@ -152,7 +162,7 @@
     function renderConversationList(convs) {
         const list = document.getElementById('conversation-list');
         if (!convs.length) {
-            list.innerHTML = '<p class="text-xs text-gray-400 dark:text-gray-500 p-2">No conversations yet.</p>';
+            list.innerHTML = '<div class="p-4 text-center text-gray-500 dark:text-gray-400"><p class="text-sm mb-2">No conversations yet.</p><p class="text-xs">Click <strong>New Chat</strong> above to start.</p></div>';
             return;
         }
 
@@ -290,7 +300,7 @@
                 break;
             case 'error':
                 removeThinkingIndicator();
-                addErrorMessage(evt.content || 'Unknown error');
+                addErrorMessage(evt.content || 'Unknown error', true);
                 chatState = 'done';
                 setInputEnabled(true);
                 break;
@@ -403,11 +413,12 @@
 
     function removeThinkingIndicator() { const el = document.getElementById('thinking-indicator'); if (el) el.remove(); }
 
-    function addErrorMessage(text) {
+    function addErrorMessage(text, showRetry) {
         removeThinkingIndicator();
         const div = document.createElement('div');
+        const retryBtn = showRetry ? '<button type="button" onclick="retrySend()" class="mt-2 text-sm font-medium text-blue-600 dark:text-blue-400 hover:underline">Thử lại</button>' : '';
         div.className = 'msg-bot max-w-4xl mx-auto';
-        div.innerHTML = `<div class="flex justify-start"><div class="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-700 rounded-2xl rounded-bl-md px-4 py-2 max-w-[75%] shadow-sm"><p class="text-red-600 dark:text-red-400 text-sm">${escapeHtml(text)}</p></div></div>`;
+        div.innerHTML = '<div class="flex justify-start"><div class="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-700 rounded-2xl rounded-bl-md px-4 py-2 max-w-[75%] shadow-sm"><p class="text-red-600 dark:text-red-400 text-sm">' + escapeHtml(text) + '</p>' + retryBtn + '</div></div>';
         chatMessages.appendChild(div);
         scrollToBottom();
     }
@@ -424,9 +435,12 @@
         const text = messageInput.value.trim();
         if (!text || chatState === 'thinking' || chatState === 'streaming') return false;
 
+        lastUserMessageForRetry = text;
         addUserMessage(text);
         messageInput.value = '';
         messageInput.style.height = 'auto';
+        var fileInputEl = document.getElementById('file-input');
+        if (fileInputEl) fileInputEl.value = '';
         setInputEnabled(false);
         chatState = 'thinking';
         addThinkingIndicator();
@@ -435,19 +449,50 @@
             const formData = new FormData();
             formData.append('message', text);
             formData.append('stream', 'true');
+            const fileInput = document.getElementById('file-input');
+            if (fileInput && fileInput.files && fileInput.files.length > 0) {
+                for (let i = 0; i < fileInput.files.length; i++) formData.append('files', fileInput.files[i]);
+            }
             const resp = await fetch('/chat/send', { method: 'POST', body: formData });
             if (!resp.ok) {
                 const data = await resp.json().catch(() => ({}));
-                addErrorMessage(data.error || 'Request failed: ' + resp.statusText);
+                addErrorMessage(data.error || 'Request failed: ' + resp.statusText, true);
                 chatState = 'done';
                 setInputEnabled(true);
             }
         } catch (err) {
-            addErrorMessage('Network error: ' + err.message);
+            addErrorMessage('Network error: ' + err.message, true);
             chatState = 'done';
             setInputEnabled(true);
         }
         return false;
+    }
+
+    function retrySend() {
+        if (!lastUserMessageForRetry || chatState === 'thinking' || chatState === 'streaming') return;
+        setInputEnabled(false);
+        chatState = 'thinking';
+        addThinkingIndicator();
+        const formData = new FormData();
+        formData.append('message', lastUserMessageForRetry);
+        formData.append('stream', 'true');
+        const fileInput = document.getElementById('file-input');
+        if (fileInput && fileInput.files && fileInput.files.length > 0) {
+            for (let i = 0; i < fileInput.files.length; i++) formData.append('files', fileInput.files[i]);
+        }
+        fetch('/chat/send', { method: 'POST', body: formData }).then(function(resp) {
+            if (!resp.ok) {
+                resp.json().catch(() => ({})).then(function(data) {
+                    addErrorMessage(data.error || 'Request failed: ' + resp.statusText, true);
+                    chatState = 'done';
+                    setInputEnabled(true);
+                });
+            }
+        }).catch(function(err) {
+            addErrorMessage('Network error: ' + err.message, true);
+            chatState = 'done';
+            setInputEnabled(true);
+        });
     }
 
     // Init

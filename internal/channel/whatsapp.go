@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"html"
 	"io"
 	"log/slog"
 	"net/http"
@@ -96,7 +95,7 @@ func (w *WhatsApp) handleVerification(rw http.ResponseWriter, r *http.Request) {
 	if mode == "subscribe" && token == w.cfg.VerifyToken {
 		w.logger.Info("whatsapp webhook verified")
 		rw.WriteHeader(http.StatusOK)
-		fmt.Fprint(rw, html.EscapeString(challenge))
+		fmt.Fprint(rw, challenge)
 		return
 	}
 

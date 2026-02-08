@@ -4,8 +4,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{.Title}}</title>
+    <meta name="description" content="{{if .Description}}{{.Description}}{{else}}OpenBot settings — configure providers and channels.{{end}}">
+    <meta property="og:title" content="{{.Title}}">
+    <meta property="og:description" content="{{if .Description}}{{.Description}}{{else}}OpenBot settings — configure providers and channels.{{end}}">
     <script src="/assets/tailwind.js"></script>
     <script>tailwind.config={darkMode:'class'}</script>
+    <link rel="stylesheet" href="/assets/openbot-tokens.css">
     <style>
         .toast { animation: slideUp 0.3s ease-out; }
         @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
@@ -13,10 +17,10 @@
         .section-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
         .provider-chip { transition: all 0.15s; user-select: none; }
         .provider-chip:hover { transform: translateY(-1px); box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
-        .provider-chip.active { background: #eff6ff; border-color: #3b82f6; color: #1d4ed8; }
+        .provider-chip.active { background: var(--ob-chip-active-bg); border-color: var(--ob-chip-active-border); color: var(--ob-chip-active-text); }
         .provider-chip .star-btn { opacity: 0.3; transition: opacity 0.15s; }
         .provider-chip .star-btn:hover { opacity: 0.8; }
-        .provider-chip .star-btn.is-default { opacity: 1; color: #f59e0b; }
+        .provider-chip .star-btn.is-default { opacity: 1; color: var(--ob-star-default); }
         .provider-config { animation: expandIn 0.2s ease-out; }
         @keyframes expandIn { from { opacity: 0; max-height: 0; } to { opacity: 1; max-height: 500px; } }
         input[type="text"], input[type="number"], input[type="password"], select, textarea {

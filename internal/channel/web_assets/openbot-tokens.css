@@ -1,0 +1,54 @@
+/**
+ * OpenBot Web UI — design tokens (light theme).
+ * Dark mode overrides in .dark scope where needed.
+ * Use in <style> or Tailwind-compatible custom CSS.
+ */
+:root {
+  /* Primary (buttons, links, active states) */
+  --ob-primary: #3b82f6;
+  --ob-primary-hover: #2563eb;
+  --ob-primary-light: #eff6ff;
+  --ob-primary-dark: #1d4ed8;
+
+  /* Code / prose */
+  --ob-code-bg: #f1f5f9;
+  --ob-code-bg-dark: #1e293b;
+  --ob-code-text: #e2e8f0;
+  --ob-code-inline-dark: #374151;
+  --ob-code-inline-text: #e5e7eb;
+
+  /* Sidebar / accents */
+  --ob-sidebar-hover: rgba(59, 130, 246, 0.08);
+  --ob-sidebar-active: rgba(59, 130, 246, 0.12);
+  --ob-spinner-border: #94a3b8;
+  --ob-spinner-top: #3b82f6;
+
+  /* Settings / chips */
+  --ob-chip-active-bg: #eff6ff;
+  --ob-chip-active-border: #3b82f6;
+  --ob-chip-active-text: #1d4ed8;
+  --ob-star-default: #f59e0b;
+
+  /* Spacing & radius (align with Tailwind) */
+  --ob-radius-sm: 0.25rem;
+  --ob-radius-md: 0.5rem;
+  --ob-radius-lg: 0.75rem;
+  --ob-radius-full: 9999px;
+  --ob-space-1: 0.25rem;
+  --ob-space-2: 0.5rem;
+  --ob-space-3: 0.75rem;
+  --ob-space-4: 1rem;
+}
+
+.dark {
+  --ob-code-bg: #374151;
+  --ob-chip-active-bg: rgba(59, 130, 246, 0.15);
+  --ob-chip-active-border: #3b82f6;
+  --ob-chip-active-text: #93c5fd;
+}
+
+/* Shared components (reduce inline styles) */
+.ob-input-chat {
+  max-height: 160px;
+  min-height: 40px;
+}
