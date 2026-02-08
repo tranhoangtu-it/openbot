@@ -141,6 +141,19 @@ func Sanitize(cfg *Config) *Config {
 		copy.Tools.Web.SearchAPIKey = maskString(copy.Tools.Web.SearchAPIKey)
 	}
 
+	// WhatsApp secrets
+	if copy.Channels.WhatsApp.AppSecret != "" {
+		copy.Channels.WhatsApp.AppSecret = maskString(copy.Channels.WhatsApp.AppSecret)
+	}
+	if copy.Channels.WhatsApp.AccessToken != "" {
+		copy.Channels.WhatsApp.AccessToken = maskString(copy.Channels.WhatsApp.AccessToken)
+	}
+
+	// API Gateway key
+	if copy.API.APIKey != "" {
+		copy.API.APIKey = maskString(copy.API.APIKey)
+	}
+
 	return &copy
 }
 

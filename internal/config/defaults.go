@@ -86,6 +86,10 @@ func Defaults() *Config {
 			Enabled: false,
 			Port:    9090,
 		},
+		MCP: MCPConfig{
+			Enabled: false,
+			Servers: nil,
+		},
 	}
 }
 

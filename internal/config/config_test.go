@@ -235,6 +235,49 @@ func TestSanitize_ShortSecret(t *testing.T) {
 	}
 }
 
+func TestSanitize_MasksWhatsAppSecrets(t *testing.T) {
+	cfg := Defaults()
+	cfg.Channels.WhatsApp.AppSecret = "whatsapp-secret-12345678"
+	cfg.Channels.WhatsApp.AccessToken = "whatsapp-token-12345678"
+	sanitized := Sanitize(cfg)
+
+	if sanitized.Channels.WhatsApp.AppSecret == cfg.Channels.WhatsApp.AppSecret {
+		t.Fatal("WhatsApp appSecret should be masked")
+	}
+	if sanitized.Channels.WhatsApp.AccessToken == cfg.Channels.WhatsApp.AccessToken {
+		t.Fatal("WhatsApp accessToken should be masked")
+	}
+}
+
+func TestSanitize_MasksAPIGatewayKey(t *testing.T) {
+	cfg := Defaults()
+	cfg.API.APIKey = "api-gateway-key-12345678"
+	sanitized := Sanitize(cfg)
+
+	if sanitized.API.APIKey == cfg.API.APIKey {
+		t.Fatal("API gateway key should be masked")
+	}
+}
+
+func TestLoad_ValidatesConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfgFile := filepath.Join(dir, "config.json")
+	// Invalid: maxIterations=0
+	content := `{
+		"general": {
+			"maxIterations": 0
+		}
+	}`
+	if err := os.WriteFile(cfgFile, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(cfgFile)
+	if err == nil {
+		t.Fatal("expected validation error for maxIterations=0")
+	}
+}
+
 // --- ListPaths ---
 
 func TestListPaths_ReturnsAllLeaves(t *testing.T) {
@@ -287,6 +330,107 @@ func TestFlexStringList_InvalidJSON(t *testing.T) {
 	err := json.Unmarshal([]byte(`not json`), &list)
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
+	}
+}
+
+// --- ExpandEnvVars ---
+
+func TestExpandEnvVars_SimpleSubstitution(t *testing.T) {
+	t.Setenv("TEST_API_KEY", "sk-abc123")
+	result := ExpandEnvVars(`{"apiKey": "${TEST_API_KEY}"}`)
+	expected := `{"apiKey": "sk-abc123"}`
+	if result != expected {
+		t.Fatalf("expected %q, got %q", expected, result)
+	}
+}
+
+func TestExpandEnvVars_DefaultValue(t *testing.T) {
+	// Ensure the var is unset
+	os.Unsetenv("NONEXISTENT_VAR_12345")
+	result := ExpandEnvVars(`{"port": "${NONEXISTENT_VAR_12345:-8080}"}`)
+	expected := `{"port": "8080"}`
+	if result != expected {
+		t.Fatalf("expected %q, got %q", expected, result)
+	}
+}
+
+func TestExpandEnvVars_SetVarOverridesDefault(t *testing.T) {
+	t.Setenv("MY_PORT", "9090")
+	result := ExpandEnvVars(`{"port": "${MY_PORT:-8080}"}`)
+	expected := `{"port": "9090"}`
+	if result != expected {
+		t.Fatalf("expected %q, got %q", expected, result)
+	}
+}
+
+func TestExpandEnvVars_MultipleVars(t *testing.T) {
+	t.Setenv("HOST", "localhost")
+	t.Setenv("PORT", "3000")
+	result := ExpandEnvVars(`"${HOST}:${PORT}"`)
+	expected := `"localhost:3000"`
+	if result != expected {
+		t.Fatalf("expected %q, got %q", expected, result)
+	}
+}
+
+func TestExpandEnvVars_UnsetVarNoDefault_KeepsOriginal(t *testing.T) {
+	os.Unsetenv("TOTALLY_UNSET_VAR_XYZ")
+	result := ExpandEnvVars(`"${TOTALLY_UNSET_VAR_XYZ}"`)
+	expected := `"${TOTALLY_UNSET_VAR_XYZ}"`
+	if result != expected {
+		t.Fatalf("expected %q, got %q", expected, result)
+	}
+}
+
+func TestExpandEnvVars_EmptyVarUsesDefault(t *testing.T) {
+	t.Setenv("EMPTY_VAR", "")
+	result := ExpandEnvVars(`"${EMPTY_VAR:-fallback}"`)
+	expected := `"fallback"`
+	if result != expected {
+		t.Fatalf("expected %q, got %q", expected, result)
+	}
+}
+
+func TestExpandEnvVars_NoVarsInInput(t *testing.T) {
+	input := `{"key": "value", "number": 42}`
+	result := ExpandEnvVars(input)
+	if result != input {
+		t.Fatalf("expected no change, got %q", result)
+	}
+}
+
+func TestExpandEnvVars_DollarSignWithoutBraces(t *testing.T) {
+	input := `"$HOME is not substituted"`
+	result := ExpandEnvVars(input)
+	if result != input {
+		t.Fatalf("expected no change for bare $VAR, got %q", result)
+	}
+}
+
+func TestLoad_WithEnvVarSubstitution(t *testing.T) {
+	t.Setenv("TEST_OPENBOT_WORKSPACE", "/tmp/test-workspace")
+
+	dir := t.TempDir()
+	cfgFile := filepath.Join(dir, "config.json")
+	content := `{
+		"general": {
+			"workspace": "${TEST_OPENBOT_WORKSPACE}",
+			"logLevel": "info",
+			"maxIterations": 20,
+			"defaultProvider": "ollama",
+			"maxConcurrentMessages": 5
+		}
+	}`
+	if err := os.WriteFile(cfgFile, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(cfgFile)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.General.Workspace != "/tmp/test-workspace" {
+		t.Fatalf("expected workspace '/tmp/test-workspace', got %q", cfg.General.Workspace)
 	}
 }
 
