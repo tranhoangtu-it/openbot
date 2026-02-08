@@ -11,6 +11,7 @@ type MemoryStore interface {
 	GetConversation(ctx context.Context, id string) (*Conversation, error)
 	UpdateConversation(ctx context.Context, conv Conversation) error
 	ListConversations(ctx context.Context, limit int) ([]Conversation, error)
+	DeleteConversation(ctx context.Context, id string) error
 
 	AddMessage(ctx context.Context, convID string, msg MessageRecord) error
 	GetMessages(ctx context.Context, convID string, limit int) ([]MessageRecord, error)

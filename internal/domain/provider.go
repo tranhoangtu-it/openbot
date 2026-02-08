@@ -55,8 +55,17 @@ type ChatRequest struct {
 	MaxTokens   int
 	Temperature float64
 	Stream      bool
-	StreamCh    chan<- string // deprecated: use StreamingProvider.ChatStream instead
-	Provider    string        // optional: override default provider for this request
+	StreamCh    chan<- string  // deprecated: use StreamingProvider.ChatStream instead
+	Provider    string         // optional: override default provider for this request
+	Images      []ImageInput   // optional: images for vision models
+}
+
+// ImageInput represents an image to be included in a chat request for vision models.
+type ImageInput struct {
+	URL      string `json:"url,omitempty"`       // URL of the image
+	Base64   string `json:"base64,omitempty"`    // base64-encoded image data
+	MimeType string `json:"mime_type,omitempty"` // e.g., "image/jpeg", "image/png"
+	Detail   string `json:"detail,omitempty"`    // "auto", "low", or "high"
 }
 
 type ChatResponse struct {
