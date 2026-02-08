@@ -6,6 +6,8 @@ dist/
 
 # Config with secrets (use config.example.json as template)
 config.json
+lighthouse-*.json
+e2e/config.e2e.json
 
 # SQLite database files
 *.db

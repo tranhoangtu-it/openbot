@@ -2,9 +2,13 @@
   "general": {
     "workspace": "~/.openbot/workspace",
     "logLevel": "info",
+    "logFile": "",
     "maxIterations": 20,
     "defaultProvider": "ollama",
-    "maxConcurrentMessages": 5
+    "failoverChain": [],
+    "maxConcurrentMessages": 5,
+    "maxTokensPerSession": 0,
+    "tokenBudgetAlert": 0
   },
   "providers": {
     "ollama": {
@@ -16,14 +20,35 @@
     "openai": {
       "enabled": false,
       "mode": "api",
-      "apiKey": "",
+      "apiKey": "${OPENAI_API_KEY}",
       "defaultModel": "gpt-4o"
     },
     "claude": {
       "enabled": false,
       "mode": "api",
-      "apiKey": "",
+      "apiKey": "${ANTHROPIC_API_KEY}",
       "defaultModel": "claude-sonnet-4-20250514"
+    },
+    "deepseek": {
+      "enabled": false,
+      "mode": "api",
+      "apiBase": "https://api.deepseek.com/v1",
+      "apiKey": "${DEEPSEEK_API_KEY}",
+      "defaultModel": "deepseek-chat"
+    },
+    "openrouter": {
+      "enabled": false,
+      "mode": "api",
+      "apiBase": "https://openrouter.ai/api/v1",
+      "apiKey": "${OPENROUTER_API_KEY}",
+      "defaultModel": "openai/gpt-4o"
+    },
+    "groq": {
+      "enabled": false,
+      "mode": "api",
+      "apiBase": "https://api.groq.com/openai/v1",
+      "apiKey": "${GROQ_API_KEY}",
+      "defaultModel": "llama-3.3-70b-versatile"
     }
   },
   "channels": {
@@ -54,6 +79,16 @@
       "verifyToken": "",
       "phoneNumberId": "",
       "webhookPath": "/webhook/whatsapp"
+    },
+    "discord": {
+      "enabled": false,
+      "token": "",
+      "guildId": ""
+    },
+    "slack": {
+      "enabled": false,
+      "botToken": "",
+      "appToken": ""
     }
   },
   "memory": {
@@ -102,5 +137,17 @@
     "enabled": false,
     "port": 9090,
     "apiKey": ""
+  },
+  "mcp": {
+    "enabled": false,
+    "servers": [
+      {
+        "name": "my-mcp-server",
+        "transport": "stdio",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-everything"],
+        "env": {}
+      }
+    ]
   }
 }
