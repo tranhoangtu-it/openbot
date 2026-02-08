@@ -326,8 +326,13 @@ func (w *Web) getOrCreateSession(r *http.Request, rw http.ResponseWriter) string
 		sessionID := fmt.Sprintf("web_%d", time.Now().UnixNano())
 		w.logger.Warn("rand.Read failed, using fallback session ID", "err", err)
 		http.SetCookie(rw, &http.Cookie{
-			Name: sessionCookieName, Value: sessionID, Path: "/",
-			MaxAge: sessionMaxAge, HttpOnly: true, SameSite: http.SameSiteLaxMode,
+			Name:     sessionCookieName,
+			Value:    sessionID,
+			Path:     "/",
+			MaxAge:   sessionMaxAge,
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+			Secure:   true,
 		})
 		return sessionID
 	}
@@ -340,6 +345,7 @@ func (w *Web) getOrCreateSession(r *http.Request, rw http.ResponseWriter) string
 		MaxAge:   sessionMaxAge,
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
+		Secure:   true,
 	})
 	w.logger.Info("new web session created", "session", sessionID)
 	return sessionID
